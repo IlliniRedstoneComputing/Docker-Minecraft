@@ -1,0 +1,12 @@
+[submodule "src/project-0"]
+	path = src/project-0
+	url = https://github.com/IlliniRedstoneComputing/Project-0-Container.git
+[submodule "src/project-1"]
+	path = src/project-1
+	url = https://github.com/IlliniRedstoneComputing/Project-1-Container.git
+[submodule "src/lobby"]
+	path = src/lobby
+	url = https://github.com/IlliniRedstoneComputing/Lobby.git
+[submodule "src/onboarding"]
+	path = src/onboarding
+	url = https://github.com/IlliniRedstoneComputing/Onboarding-Server.git

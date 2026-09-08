@@ -1,0 +1,10 @@
+{
+  "files.associations": {
+    "*.json.example": "json",
+    "*.yml.example": "yaml",
+    "*.toml.example": "toml",
+    "*.txt.example": "plaintext",
+    "backup.config": "dotenv",
+    "backup.config.example": "dotenv"
+  }
+}

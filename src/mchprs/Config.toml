@@ -1,0 +1,32 @@
+# Server Configuration
+bind_address = "0.0.0.0:25565"
+motd = "Minecraft High Performance Redstone Server"
+chat_format = "<{username}> {message}"
+max_players = 99999
+view_distance = 8
+whitelist = false
+schemati = false
+block_in_hitbox = true
+auto_redpiler = false
+
+# Velocity Configuration
+[velocity]
+enabled = true
+# This is the secret contained within `forwarding-secret-file` from your velocity config,
+# NOT the path to the file.
+secret = "${VELOCITY_SECRET}"
+
+#! Uncomment this only when luckperms use has been fully figured out and integrated across all servers
+
+# # LuckPerms Configuration
+[luckperms]
+# # Define the address of the database.
+host = "${LUCKPERMS_DATA_ADDRESS}"
+# # The name of the database the LuckPerms data is in.
+db_name = "${LUCKPERMS_DATA_DATABASE:-luckperms}"
+# # Credentials for the database.
+username = "${LUCKPERMS_DATA_USERNAME:-user_luckperms}"
+password = "${LUCKPERMS_DATA_PASSWORD:-password_luckperms}"
+# # The name of the server, used for server specific permissions.
+# # See: https://luckperms.net/wiki/Context
+server_context = "mchprs"

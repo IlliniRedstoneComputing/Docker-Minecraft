@@ -1,0 +1,443 @@
+name: irc-minecraft
+services:
+  # Volume setup service to initialize shared storage with proper subdirectories and permissions
+  # ! Any service that depends on the "managed-files" volume should depend on this service to ensure the directory structure is created before they start
+  volume_init:
+    container_name: volume-init
+    image: alpine
+    volumes:
+      - managed-files:/mnt/data
+    # This command creates the subdirectories and sets permissions
+    command: >
+      sh -c "mkdir -p /mnt/data/velocity /mnt/data/lobby /mnt/data/survival
+      /mnt/data/onboarding /mnt/data/mchprs /mnt/data/project-0
+      /mnt/data/project-1 && 
+         chmod -R 777 /mnt/data"
+
+  # Daily backup service that creates compressed archives of all managed volumes and uploads them to S3-compatible storage
+  backup:
+    container_name: backup
+    image: offen/docker-volume-backup:latest
+    restart: unless-stopped
+    env_file:
+      - backup.config
+    volumes:
+      - type: volume
+        source: managed-files
+        target: /backup/survival
+        volume:
+          subpath: survival
+      - type: volume
+        source: managed-files
+        target: /backup/project-0
+        volume:
+          subpath: project-0
+      - type: volume
+        source: managed-files
+        target: /backup/project-1
+        volume:
+          subpath: project-1
+      - /var/run/docker.sock:/var/run/docker.sock:ro # Docker socket needed to stop/start containers during backup
+    networks:
+      - minecraft-network
+    depends_on:
+      volume_init:
+        condition: service_completed_successfully
+
+  # WireGuard Client Service to bridge home server stack to external VPS
+  # wireguard:
+  #   image: lscr.io/linuxserver/wireguard:latest
+  #   container_name: wireguard
+  #   restart: unless-stopped
+  #   cap_add:
+  #     - NET_ADMIN
+  #     - SYS_MODULE
+  #   environment:
+  #     - PUID=1000
+  #     - PGID=1000
+  #     - TZ=UTC
+  #   volumes:
+  #     - ./wg0.conf:/config/wg0.conf
+  #     - wireguard-module-data:/lib/modules
+  #   sysctls:
+  #     - net.ipv4.conf.all.src_valid_mark=1
+  #     - net.ipv4.ip_forward=1
+  #   # Declare the ports that VPS iptables will forward into your tunnel
+  #   ports:
+  #     - "80:80" # HTTP (e.g. Caddy on VPS or web app)
+  #     - "443:443" # HTTPS
+  #     # - "${VELOCITY_PORT:-25565}:25565" # Minecraft Proxy
+  #     - "2022:2022" # SFTP / SSH
+  #   networks:
+  #     - frontend-network
+  #     - minecraft-network
+
+  # MariaDB database for luckperms player permissions
+  luckperms-db:
+    image: mariadb:11.4
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    container_name: luckperms-db
+    restart: unless-stopped
+    environment:
+      - MARIADB_ROOT_PASSWORD=${LUCKPERMS_DB_ROOT_PASSWORD:-rootpassword}
+      - MARIADB_USER=${LUCKPERMS_DB_USER:-luckperms_user}
+      - MARIADB_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
+      - MARIADB_DATABASE=${LUCKPERMS_DB:-luckperms}
+    volumes:
+      - luckperms-db-data:/var/lib/mysql
+    networks:
+      - minecraft-network
+
+  # Standalone luckperms instance with rest api
+  luckperms-standalone:
+    build:
+      context: ./src/luckperms-standalone
+    container_name: luckperms-standalone
+    restart: unless-stopped
+    environment:
+      # configure the LuckPerms standalone "plugin"
+      - LUCKPERMS_STORAGE_METHOD=mariadb
+      - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
+      - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+
+      # configure the LuckPerms messaging service
+      - LUCKPERMS_MESSAGING_SERVICE=sql
+
+      # configure the REST API
+      - LUCKPERMS_REST_HTTP_PORT=8080
+      - LUCKPERMS_REST_AUTH=true
+      - LUCKPERMS_REST_AUTH_KEYS=${LUCKPERMS_SECRET:-luckpermssecret}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost:3001/healthz",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - minecraft-network
+      - frontend-network
+    depends_on:
+      luckperms-db:
+        condition: service_healthy
+
+  # SFTP/HTTP server for file transfers
+  sftpgo:
+    image: drakkan/sftpgo:v2.6-alpine
+    container_name: sftpgo
+    restart: unless-stopped
+    environment:
+      # URL of your custom backend API endpoint
+      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HOOK=${SFTPGO_AUTH_HOOK:-http://localhost:3000/api/sftpgo-auth}
+
+      # Optional: Send a secret key in the HTTP header to secure the hook endpoint
+      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_KEY=X-SFTPGo-Hook-Secret
+      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_VALUE=${SFTPGO_AUTH_SECRET:-sftpgo-secret}
+
+      # Define fallback scope (0 = fallback enabled, 1 = external auth only)
+      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_SCOPE=0
+
+      # Set non-root HTTP access
+      - SFTPGO_HTTPD__WEB_ROOT=/files
+
+    volumes:
+      - sftpgo-data:/var/lib/sftpgo
+      - managed-files:/srv/sftpgo/data
+    healthcheck:
+      test: ["CMD", "sftpgo", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - frontend-network
+    depends_on:
+      volume_init:
+        condition: service_completed_successfully
+
+  # Proxy for Minecraft servers
+  velocity:
+    build:
+      context: ./src/velocity
+      args:
+        - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+    container_name: velocity
+    ports:
+      - 25565:25565
+    environment:
+      - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
+      - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    volumes:
+      - type: volume
+        source: managed-files
+        target: /server
+        volume:
+          subpath: velocity
+    networks:
+      - minecraft-network
+    depends_on:
+      luckperms-db:
+        condition: service_healthy
+      volume_init:
+        condition: service_completed_successfully
+
+  # ! ALL MINECRAFT SERVERS SHOULD BE ADDED BELOW THIS LINE
+
+  lobby:
+    build:
+      context: ./src/lobby
+    container_name: lobby-server
+    volumes:
+      - type: volume
+        source: managed-files
+        target: /data
+        volume:
+          subpath: lobby
+    environment:
+      - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
+      - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+
+      # Luckperms database configuration
+      - LUCKPERMS_STORAGE_METHOD=mariadb
+      - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
+      - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+
+      # Luckperms messaging service configuration
+      - LUCKPERMS_MESSAGING_SERVICE=sql
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    networks:
+      - minecraft-network
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      velocity:
+        condition: service_healthy
+      luckperms-db:
+        condition: service_healthy
+      volume_init:
+        condition: service_completed_successfully
+
+  survival:
+    build:
+      context: ./src/survival
+    container_name: survival-server
+    volumes:
+      - type: volume
+        source: managed-files
+        target: /data
+        volume:
+          subpath: survival
+    environment:
+      - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
+      - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+
+      # Luckperms database configuration
+      - LUCKPERMS_STORAGE_METHOD=mariadb
+      - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
+      - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+
+      # Luckperms messaging service configuration
+      - LUCKPERMS_MESSAGING_SERVICE=sql
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    networks:
+      - minecraft-network
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      velocity:
+        condition: service_healthy
+      luckperms-db:
+        condition: service_healthy
+      volume_init:
+        condition: service_completed_successfully
+
+  onboarding:
+    build:
+      context: ./src/onboarding
+    container_name: onboarding-server
+    volumes:
+      - type: volume
+        source: managed-files
+        target: /data
+        volume:
+          subpath: onboarding
+    environment:
+      - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
+      - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+
+      # Luckperms database configuration
+      - LUCKPERMS_STORAGE_METHOD=mariadb
+      - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
+      - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+
+      # Luckperms messaging service configuration
+      - LUCKPERMS_MESSAGING_SERVICE=sql
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    networks:
+      - minecraft-network
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      velocity:
+        condition: service_healthy
+      luckperms-db:
+        condition: service_healthy
+      volume_init:
+        condition: service_completed_successfully
+
+  mchprs:
+    build:
+      context: ./src/mchprs
+    container_name: mchprs-server
+    volumes:
+      - type: volume
+        source: managed-files
+        target: /data
+        volume:
+          subpath: mchprs
+    environment:
+      - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
+      - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+
+      # Luckperms database configuration
+      - LUCKPERMS_DATA_ADDRESS=luckperms-db
+      - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    networks:
+      - minecraft-network
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      velocity:
+        condition: service_healthy
+      luckperms-db:
+        condition: service_healthy
+      volume_init:
+        condition: service_completed_successfully
+
+  # ! ALL PROJECT SERVERS SHOULD BE ADDED BELOW THIS LINE
+
+  project-0:
+    build:
+      context: ./src/project-0
+    container_name: project-0-server
+    volumes:
+      - type: volume
+        source: managed-files
+        target: /data
+        volume:
+          subpath: project-0
+    environment:
+      - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
+      - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+
+      # Luckperms database configuration
+      - LUCKPERMS_STORAGE_METHOD=mariadb
+      - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
+      - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+
+      # Luckperms messaging service configuration
+      - LUCKPERMS_MESSAGING_SERVICE=sql
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    networks:
+      - minecraft-network
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      velocity:
+        condition: service_healthy
+      luckperms-db:
+        condition: service_healthy
+      volume_init:
+        condition: service_completed_successfully
+
+  project-1:
+    build:
+      context: ./src/project-1
+    container_name: project-1-server
+    volumes:
+      - type: volume
+        source: managed-files
+        target: /data
+        volume:
+          subpath: project-1
+    environment:
+      - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
+      - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+
+      # Luckperms database configuration
+      - LUCKPERMS_STORAGE_METHOD=mariadb
+      - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
+      - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+
+      # Luckperms messaging service configuration
+      - LUCKPERMS_MESSAGING_SERVICE=sql
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+    networks:
+      - minecraft-network
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      velocity:
+        condition: service_healthy
+      luckperms-db:
+        condition: service_healthy
+      volume_init:
+        condition: service_completed_successfully
+
+# Persistent volumes for data storage
+volumes:
+  managed-files:
+    driver: local
+  sftpgo-data:
+    driver: local
+  luckperms-db-data:
+    driver: local
+  wireguard-module-data:
+    driver: local
+
+# Custom network for service communication
+networks:
+  minecraft-network:
+    driver: bridge
+    name: irc-minecraft-network
+  frontend-network:
+    driver: bridge
+    name: irc-frontend-network
