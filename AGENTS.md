@@ -15,19 +15,29 @@ Verification evidence is in
 [`docs/superpowers/specs/2026-09-22-compose-orchestration-completion-design.md`](docs/superpowers/specs/2026-09-22-compose-orchestration-completion-design.md),
 Appendix B.
 
-### 1. The `luckperms-standalone` healthcheck on `:3001/healthz` is correct
+### 1. The `luckperms-standalone` healthcheck must be overridden, and port 3001 is correct
 
 Port 3001 is the LuckPerms **standalone heartbeat server**, started when the app runs
 with `--docker`. It is entirely separate from the REST API's port 8080.
 `HeartbeatHttpServer` registers `createContext("/health", ...)`, and Java's `HttpServer`
-matches contexts by **path prefix**, so `/healthz` resolves to that handler. `wget` is
-present in the image, and the handler returns 503 when unhealthy, so `--spider` fails
-correctly.
+matches contexts by **path prefix**, so `/healthz` also resolves to that handler. `wget`
+is present in the image, and the handler returns 503 when unhealthy.
 
-The only legitimate change: the base image `ghcr.io/luckperms/luckperms` already declares
-a **stricter** check (`wget http://localhost:3001/health -q -O - | grep -c '"up":true'`),
-so the compose-level override may be deleted to inherit it. Do not "correct" the port or
-the path.
+**Do not delete the compose-level `healthcheck:` override to "inherit the base image's".**
+The base image declares
+`wget http://localhost:3001/health -q -O - | grep -c '"up":true'`, but this version's
+endpoint actually returns:
+
+```json
+{"healthy":true,"details":{"storageConnected":true,"storagePing":1}}
+```
+
+The field is `healthy`, not `up`. The inherited check can **never** pass, leaving the
+container permanently `unhealthy` — which in turn stops `luckperms-init` from ever
+starting, since it waits on `condition: service_healthy`. Verified by running all three
+candidate commands inside the running container.
+
+The override must therefore grep `"healthy":true`. Do not "correct" the port to 8080.
 
 ### 2. `velocity` does not need a healthcheck added
 

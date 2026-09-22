@@ -277,9 +277,13 @@ assert_eq "$DBUSER_OK" "$DBUSER_ALL" "every LUCKPERMS_DB_USER default agrees"
 VELOCITY=$(service_block velocity "$CONFIG")
 assert_contains "$VELOCITY" "restart: unless-stopped" "velocity has a restart policy"
 
-# The base image healthcheck must not be shadowed by a weaker override.
+# The healthcheck override must be PRESENT and must match the real response
+# schema. The base image's inherited check greps '"up":true' while the endpoint
+# reports {"healthy":true,...}, so inheriting it leaves the container forever
+# unhealthy and luckperms-init never starts.
 LPSA=$(service_block luckperms-standalone "$CONFIG")
-assert_not_contains "$LPSA" "healthcheck" "no redundant luckperms healthcheck override"
+assert_contains "$LPSA" "healthy" "luckperms healthcheck matches the real schema"
+assert_not_contains "$LPSA" '"up":true' "luckperms healthcheck does not use the broken needle"
 
 finish
 ```
@@ -339,27 +343,47 @@ In `compose.yml`, in the `velocity` service, immediately after the `container_na
     restart: unless-stopped
 ```
 
-- [ ] **Step 7: Remove the redundant LuckPerms healthcheck override**
+- [ ] **Step 7: Fix the LuckPerms healthcheck — do NOT delete it**
 
-In `compose.yml`, delete this entire block from the `luckperms-standalone` service:
+> **This step was reversed during execution.** It originally said to delete the override
+> and inherit the base image's check. That was wrong, it was acted on, and it introduced
+> a regression that would have blocked Task 16. Recorded rather than silently rewritten,
+> because the reasoning matters.
+
+The base image declares
+`wget http://localhost:3001/health -q -O - | grep -c '"up":true'`, but this version's
+endpoint actually returns:
+
+```json
+{"healthy":true,"details":{"storageConnected":true,"storagePing":1}}
+```
+
+The field is `healthy`, not `up`, so **the inherited check can never pass** and the
+container sits permanently `unhealthy`. Verified by running all three candidate commands
+inside the running container. This blocks `luckperms-init` (Task 16), which declares
+`depends_on: luckperms-standalone: {condition: service_healthy}`.
+
+Replace the existing `healthcheck:` block in the `luckperms-standalone` service with:
 
 ```yaml
     healthcheck:
+      # The base image's inherited check greps for '"up":true', but this version
+      # reports {"healthy":true,...}. The inherited check can NEVER pass, so this
+      # must be overridden rather than removed. Matching the body rather than just
+      # the status code also proves storage connectivity, not merely liveness.
       test:
         [
-          "CMD",
-          "wget",
-          "--quiet",
-          "--tries=1",
-          "--spider",
-          "http://localhost:3001/healthz",
+          "CMD-SHELL",
+          "wget -q -O - http://localhost:3001/health | grep -q '\"healthy\":true'",
         ]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
 ```
 
-The base image `ghcr.io/luckperms/luckperms` already declares a stricter check on the same port. **This is a removal, not a correction — the port and path in the deleted block were right.** See `AGENTS.md`.
+Port 3001 is the standalone heartbeat server, separate from the REST API's 8080. That
+part of the original configuration was always correct — see `AGENTS.md`.
 
 - [ ] **Step 8: Remove the placeholder webdav mount and port**
 
@@ -674,9 +698,15 @@ Replace the entire contents of `src/caddy/Caddyfile` with:
 # TLS is terminated by Cloudflare, so this listens on plain HTTP.
 :80 {
 	# WebDAV COPY and MOVE send an absolute URL in Destination. Rewrite it to a
-	# path-only form or every COPY and MOVE fails.
+	# path-only form, or any client whose Destination host does not match the
+	# request Host gets a 502 from the WebDAV server.
+	#
+	# `request_header`, NOT `header`. In Caddy, `header` manipulates the
+	# RESPONSE; only `request_header` rewrites what reaches the upstream.
+	# Verified: with `header`, a foreign-host Destination still returned 502
+	# because the rewrite never applied to the proxied request.
 	@hasDest header_regexp dest Destination ^https?://[^/]+(.*)$
-	header @hasDest Destination {re.dest.1}
+	request_header @hasDest Destination {re.dest.1}
 
 	# handle, NOT handle_path: the /files prefix must reach the WebDAV server,
 	# which strips it itself and adds it back to PROPFIND responses.
@@ -763,10 +793,12 @@ echo "webdav through caddy"
 CODE=$(dav -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$BASE/files/")
 assert_eq "$CODE" "207" "PROPFIND /files/ returns multi-status"
 
-# A request missing the /files prefix must be refused, proving the prefix is
-# reaching the server rather than being stripped by Caddy.
+# A path outside both admin routes falls through to the catch-all redirect.
+# (The 207 above is what proves the /files prefix actually reaches webdav: if
+# Caddy stripped it, webdav would see "/" and answer 400. A path like
+# /survival/ never reaches webdav at all, so it cannot test that.)
 CODE=$(dav -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$BASE/survival/")
-assert_in "$CODE" "400 404 502" "a request without the /files prefix is refused"
+assert_in "$CODE" "301 302 307 308" "an unrouted path hits the catch-all redirect"
 
 # Unauthenticated access must be rejected.
 CODE=$(docker run --rm --network irc-frontend-network curlimages/curl:latest \
@@ -785,13 +817,18 @@ CODE=$(dav -o /dev/null -w '%{http_code}' -X MOVE \
   "$BASE/files/survival/webdav-test.txt")
 assert_in "$CODE" "201 204" "MOVE with a path-only Destination succeeds"
 
-# The same MOVE with an absolute Destination must also work, because Caddy
-# rewrites it. This is the regression guard for the @hasDest rule -- without
-# it, this returns 502 or 400.
+# The same MOVE with an absolute Destination whose host does NOT match the
+# request Host. This is the real regression guard for the @hasDest rule.
+#
+# A matching host would prove nothing: golang.org/x/net/webdav, which this
+# server is built on, already accepts an absolute Destination whenever its
+# host equals the request's Host, so "http://caddy/..." succeeds with or
+# without the rewrite. Only a foreign host exercises it -- verified: 502
+# without the rewrite, 201 with it.
 CODE=$(dav -o /dev/null -w '%{http_code}' -X MOVE \
-  -H "Destination: http://caddy/files/survival/webdav-test.txt" \
+  -H "Destination: http://other-host.example:9999/files/survival/webdav-test.txt" \
   "$BASE/files/survival/webdav-moved.txt")
-assert_in "$CODE" "201 204" "MOVE with an absolute Destination succeeds"
+assert_in "$CODE" "201 204" "MOVE with a foreign-host absolute Destination succeeds"
 
 CODE=$(dav -o /dev/null -w '%{http_code}' -X DELETE "$BASE/files/survival/webdav-test.txt")
 assert_in "$CODE" "200 204" "DELETE removes the file"

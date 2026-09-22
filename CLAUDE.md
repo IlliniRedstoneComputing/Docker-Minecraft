@@ -11,9 +11,11 @@ Each has been verified against upstream source or confirmed with the maintainer.
 "fix" them. Full evidence in [`AGENTS.md`](AGENTS.md) and in Appendix B of
 [`docs/superpowers/specs/2026-09-22-compose-orchestration-completion-design.md`](docs/superpowers/specs/2026-09-22-compose-orchestration-completion-design.md).
 
-1. **`luckperms-standalone`'s healthcheck on `:3001/healthz` works.** 3001 is the
-   standalone heartbeat server, separate from the REST API's 8080, and Java's
-   `HttpServer` prefix-matches `/healthz` onto the `/health` context.
+1. **`luckperms-standalone`'s healthcheck must stay overridden, and 3001 is the right
+   port.** 3001 is the standalone heartbeat server, separate from the REST API's 8080.
+   Do not delete the override to inherit the base image's — the base greps `"up":true`
+   but the endpoint reports `"healthy":true`, so inheriting it leaves the container
+   permanently unhealthy and `luckperms-init` never starts.
 2. **`velocity` needs no healthcheck added.** It inherits one from `itzg/mc-proxy`,
    because `src/velocity/Dockerfile` overrides only `CMD`.
 3. **`mchprs` takes a bare hostname — never add `:3306`.** It passes `host` to
