@@ -71,53 +71,102 @@ Create `tests/lib.sh`:
 ```bash
 #!/usr/bin/env bash
 # Shared assertion helpers. Source this from every test script.
+#
+# Sourcing sets `set -uo pipefail` in the caller. It deliberately does NOT
+# set -e: a suite must record a failure and keep going.
+#
+# Results are recorded in temp files rather than shell variables so that an
+# assertion inside a pipeline or a $(...) subshell is still counted. Plain
+# counters are lost with the subshell, which lets a suite print FAIL and
+# still exit 0 -- a test that passes when it should fail is worse than no
+# test at all.
 set -uo pipefail
 
-TESTS_RUN=0
-TESTS_FAILED=0
+: "${_ASSERT_RUN_LOG:=$(mktemp)}"
+: "${_ASSERT_FAIL_LOG:=$(mktemp)}"
+export _ASSERT_RUN_LOG _ASSERT_FAIL_LOG
 
-_pass() { TESTS_RUN=$((TESTS_RUN + 1)); printf '  ok   %s\n' "$1"; }
-_fail() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  TESTS_FAILED=$((TESTS_FAILED + 1))
+pass() {
+  printf 'x\n' >>"$_ASSERT_RUN_LOG"
+  printf '  ok   %s\n' "$1"
+}
+
+fail() {
+  printf 'x\n' >>"$_ASSERT_RUN_LOG"
+  printf 'x\n' >>"$_ASSERT_FAIL_LOG"
   printf '  FAIL %s\n' "$1"
-  [ $# -gt 1 ] && printf '       %s\n' "$2"
+  if [ $# -gt 1 ]; then printf '       %s\n' "$2"; fi
   return 0
+}
+
+# bail <description> -- unrecoverable setup failure; stop the suite non-zero.
+bail() {
+  printf '  FAIL %s\n' "$1"
+  printf '\nsuite aborted\n'
+  rm -f "$_ASSERT_RUN_LOG" "$_ASSERT_FAIL_LOG"
+  exit 1
 }
 
 # assert_contains <haystack> <needle> <description>
 assert_contains() {
   case "$1" in
-    *"$2"*) _pass "$3" ;;
-    *) _fail "$3" "expected to find: $2" ;;
+    *"$2"*) pass "$3" ;;
+    *) fail "$3" "expected to find: $2" ;;
   esac
 }
 
 # assert_not_contains <haystack> <needle> <description>
+#
+# An empty haystack is a FAILURE, not a pass. Without this guard a broken
+# extraction -- a renamed service, a changed indent, a compose render change
+# -- silently converts this assertion into a permanent pass.
 assert_not_contains() {
+  if [ -z "$1" ]; then
+    fail "$3" "haystack was empty; the extraction probably failed"
+    return 0
+  fi
   case "$1" in
-    *"$2"*) _fail "$3" "did not expect to find: $2" ;;
-    *) _pass "$3" ;;
+    *"$2"*) fail "$3" "did not expect to find: $2" ;;
+    *) pass "$3" ;;
   esac
 }
 
 # assert_eq <actual> <expected> <description>
 assert_eq() {
-  if [ "$1" = "$2" ]; then _pass "$3"; else _fail "$3" "expected '$2', got '$1'"; fi
+  if [ "$1" = "$2" ]; then pass "$3"; else fail "$3" "expected '$2', got '$1'"; fi
 }
 
 # assert_in <value> <space-separated-allowed> <description>
 assert_in() {
-  local value="$1" allowed="$2" desc="$3" candidate
-  for candidate in $allowed; do
-    if [ "$value" = "$candidate" ]; then _pass "$desc"; return 0; fi
-  done
-  _fail "$desc" "got '$value', expected one of: $allowed"
+  case " $2 " in
+    *" $1 "*) pass "$3" ;;
+    *) fail "$3" "got '$1', expected one of: $2" ;;
+  esac
+}
+
+# service_block <name> <yaml> -- print one top-level service's block.
+#
+# Works on both the rendered config and the raw compose.yml. The block ends
+# at the next key indented two spaces, whatever its first character:
+# matching /^  [a-z]/ instead would let the LAST service swallow the
+# networks and volumes sections as soon as any name began with a capital
+# or a digit.
+service_block() {
+  printf '%s\n' "$2" | awk -v svc="  $1:" '
+    index($0, svc) == 1 { f = 1; next }
+    f && /^  [^ ]/ { exit }
+    f { print }
+  '
 }
 
 finish() {
-  printf '\n%d run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
-  [ "$TESTS_FAILED" -eq 0 ] || exit 1
+  run=0
+  failed=0
+  [ -s "$_ASSERT_RUN_LOG" ] && run=$(wc -l <"$_ASSERT_RUN_LOG" | tr -d ' ')
+  [ -s "$_ASSERT_FAIL_LOG" ] && failed=$(wc -l <"$_ASSERT_FAIL_LOG" | tr -d ' ')
+  rm -f "$_ASSERT_RUN_LOG" "$_ASSERT_FAIL_LOG"
+  printf '\n%d run, %d failed\n' "$run" "$failed"
+  [ "$failed" -eq 0 ] || exit 1
   exit 0
 }
 ```
@@ -135,36 +184,54 @@ cd "$(dirname "$0")/.." || exit 1
 
 echo "compose configuration"
 
-if ! CONFIG=$(docker compose config 2>&1); then
-  echo "  FAIL docker compose config did not render"
-  echo "$CONFIG"
-  exit 1
+# Keep stderr out of the searched text. `docker compose config` writes
+# warnings about unset variables and obsolete attributes to stderr, and
+# merging them into CONFIG would let them satisfy the assertions below.
+STDERR=$(mktemp)
+if ! CONFIG=$(docker compose config 2>"$STDERR"); then
+  cat "$STDERR" >&2
+  rm -f "$STDERR"
+  bail "docker compose config did not render"
 fi
-_pass "docker compose config renders"
+rm -f "$STDERR"
+pass "docker compose config renders"
 
 # The raw file, for checks about things the renderer erases. `docker compose
 # config` strips comments and substitutes ${VAR:-default} away, so defaults
 # and commented-out blocks are only visible here.
 RAW=$(cat compose.yml)
 
-# A missing backup.config must not abort the stack.
-assert_contains "$RAW" "required: false" "backup.config is optional"
+# A missing backup.config must not abort the stack. Scoped to the backup
+# service so it cannot be satisfied by the string appearing elsewhere.
+BACKUP=$(service_block backup "$RAW")
+assert_contains "$BACKUP" "required: false" "backup.config is optional"
 
 # Exactly one published port in the whole stack.
-PUBLISHED=$(printf '%s\n' "$CONFIG" | grep -cE '^\s+published:' || true)
+PUBLISHED=$(printf '%s\n' "$CONFIG" | grep -cE '^[[:space:]]+published:' || true)
 assert_eq "$PUBLISHED" "1" "exactly one published port"
 assert_contains "$CONFIG" "target: 25565" "the published port targets 25565"
 
-# Credential defaults must agree between the database and its clients. This
-# must be checked against the raw file: interpolation hides the defaults.
+# Credential defaults must agree between the database and its clients. Checked
+# against the raw file, since interpolation hides the defaults. Both the
+# absence of the old value and the presence of the new one are asserted:
+# absence alone would still pass if the setting were deleted outright.
 assert_not_contains "$RAW" "user_luckperms" "no stale user_luckperms default"
+DBUSER_ALL=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB_USER:-' || true)
+DBUSER_OK=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB_USER:-luckperms_user}' || true)
+if [ "$DBUSER_ALL" -gt 0 ]; then
+  pass "LUCKPERMS_DB_USER defaults are present"
+else
+  fail "LUCKPERMS_DB_USER defaults are present" "found none at all"
+fi
+# Self-relative, not a hardcoded count: later tasks add more consumers.
+assert_eq "$DBUSER_OK" "$DBUSER_ALL" "every LUCKPERMS_DB_USER default agrees"
 
 # Velocity must have a restart policy like every other long-lived service.
-VELOCITY=$(printf '%s\n' "$CONFIG" | awk '/^  velocity:/{f=1;next} /^  [a-z]/{f=0} f')
+VELOCITY=$(service_block velocity "$CONFIG")
 assert_contains "$VELOCITY" "restart: unless-stopped" "velocity has a restart policy"
 
 # The base image healthcheck must not be shadowed by a weaker override.
-LPSA=$(printf '%s\n' "$CONFIG" | awk '/^  luckperms-standalone:/{f=1;next} /^  [a-z]/{f=0} f')
+LPSA=$(service_block luckperms-standalone "$CONFIG")
 assert_not_contains "$LPSA" "healthcheck" "no redundant luckperms healthcheck override"
 
 finish
@@ -355,7 +422,7 @@ git commit -m "chore: remove dead sftpgo and wireguard configuration"
 In `tests/test-compose-config.sh`, insert immediately before the `finish` line:
 
 ```bash
-WEBDAV=$(printf '%s\n' "$CONFIG" | awk '/^  webdav:/{f=1;next} /^  [a-z]/{f=0} f')
+WEBDAV=$(service_block webdav "$CONFIG")
 assert_contains "$WEBDAV" "hacdias/webdav" "webdav uses the hacdias image"
 assert_contains "$WEBDAV" "frontend-network" "webdav is on frontend-network"
 assert_contains "$WEBDAV" "target: /data" "managed-files is mounted at /data"
@@ -636,7 +703,7 @@ git commit -m "feat: add caddy path router and webdav behavior tests"
 In `tests/test-compose-config.sh`, insert immediately before the `finish` line:
 
 ```bash
-CFD=$(printf '%s\n' "$CONFIG" | awk '/^  cloudflared:/{f=1;next} /^  [a-z]/{f=0} f')
+CFD=$(service_block cloudflared "$CONFIG")
 assert_contains "$CFD" "cloudflared" "cloudflared service exists"
 assert_contains "$CFD" "TUNNEL_TOKEN" "cloudflared reads TUNNEL_TOKEN"
 ```
@@ -836,12 +903,47 @@ grep -h '^server = ' src/*/server/config/luckperms/luckperms.conf
 
 Expected: five distinct names — `lobby`, `onboarding`, `project-0`, `project-1`, `survival`. Each server keeps its own identity.
 
-- [ ] **Step 5: Commit the parent-repo file**
+- [ ] **Step 5: Align the mchprs credential defaults**
 
-The four submodule files are committed in their own repositories in Tasks 8–11.
+`src/mchprs/Config.toml` is not a LuckPerms config file — MCHPRS reads the database
+directly and has no environment-variable override — so it **must keep its `${...}`
+placeholders**. But its fallback defaults disagree with what `compose.yml` uses, so a
+missing environment variable would silently produce wrong credentials.
+
+In `src/mchprs/Config.toml`, replace:
+
+```toml
+username = "${LUCKPERMS_DATA_USERNAME:-user_luckperms}"
+password = "${LUCKPERMS_DATA_PASSWORD:-password_luckperms}"
+```
+
+with:
+
+```toml
+username = "${LUCKPERMS_DATA_USERNAME:-luckperms_user}"
+password = "${LUCKPERMS_DATA_PASSWORD:-luckperms_password}"
+```
+
+**Do not touch the `host` line.** `host = "${LUCKPERMS_DATA_ADDRESS}"` receives a bare
+hostname with no port, which is correct: MCHPRS passes it to
+`OptsBuilder::ip_or_hostname()`, which defaults the port itself. Adding `:3306` breaks it.
+
+Verify:
 
 ```bash
-git add scripts/normalize-luckperms-conf.sh src/survival/server/config/luckperms/luckperms.conf
+grep -c 'user_luckperms\|password_luckperms' src/mchprs/Config.toml
+```
+
+Expected: `0`.
+
+- [ ] **Step 6: Commit the parent-repo files**
+
+The four submodule files are committed in their own repositories in Tasks 9–10.
+
+```bash
+git add scripts/normalize-luckperms-conf.sh \
+  src/survival/server/config/luckperms/luckperms.conf \
+  src/mchprs/Config.toml
 git commit -m "refactor: drive luckperms connection settings from the environment"
 ```
 
