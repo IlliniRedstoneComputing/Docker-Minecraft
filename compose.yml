@@ -93,14 +93,26 @@ services:
       luckperms-db:
         condition: service_healthy
 
-  # WebDAV server for file access via HTTP
+  # WebDAV interface over the shared server-data volume.
+  # Single service account by design -- see src/webdav/config.yml.
   webdav:
-    image: sfuhrm/docker-nginx-webdav
+    image: ghcr.io/hacdias/webdav:latest
     container_name: webdav
-    environment:
-      - USERNAME=${WEBDAV_USERNAME:-webdavuser}
-      - PASSWORD=${WEBDAV_PASSWORD:-SecretPassword123}
     restart: unless-stopped
+    command: ["-c", "/config.yml"]
+    environment:
+      - WEBDAV_USERNAME=${WEBDAV_USERNAME:?WEBDAV_USERNAME must be set in .env}
+      - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:?WEBDAV_PASSWORD must be set in .env}
+    volumes:
+      - ./src/webdav/config.yml:/config.yml:ro
+      - type: volume
+        source: managed-files
+        target: /data
+    networks:
+      - frontend-network
+    depends_on:
+      volume_init:
+        condition: service_completed_successfully
 
   # Proxy for Minecraft servers
   velocity:

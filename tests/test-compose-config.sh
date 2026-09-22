@@ -85,4 +85,11 @@ RAW_LOWER=$(printf '%s' "$RAW" | tr 'A-Z' 'a-z')
 assert_not_contains "$RAW_LOWER" "sftpgo" "no sftpgo remnants in compose.yml"
 assert_not_contains "$RAW_LOWER" "wireguard" "no wireguard remnants in compose.yml"
 
+WEBDAV=$(service_block webdav "$CONFIG")
+assert_contains "$WEBDAV" "hacdias/webdav" "webdav uses the hacdias image"
+assert_contains "$WEBDAV" "frontend-network" "webdav is on frontend-network"
+assert_contains "$WEBDAV" "target: /data" "managed-files is mounted at /data"
+assert_not_contains "$WEBDAV" "/path/to/your/files" "no placeholder mount"
+assert_not_contains "$WEBDAV" "published" "webdav publishes no port"
+
 finish

@@ -1,0 +1,29 @@
+# WebDAV server configuration.
+#
+# This service is deliberately a SINGLE service account with full CRUD over the
+# entire managed-files volume. User management, per-directory scoping and audit
+# are the responsibility of the separate administration service that connects
+# here over one WebDAV connection. Do not add multi-user support.
+#
+# The `prefix` below must match the path Caddy routes here, and Caddy must use
+# `handle` rather than `handle_path` so the prefix actually reaches this server.
+
+address: 0.0.0.0
+port: 6065
+
+# Serve under /files. The server strips this itself and adds it back to
+# PROPFIND responses, which is why the reverse proxy must NOT strip it.
+prefix: /files
+
+# Log the real client address forwarded by Caddy.
+behindProxy: true
+
+# The whole managed-files volume.
+directory: /data
+
+# Full create/read/update/delete for the single service account.
+permissions: CRUD
+
+users:
+  - username: "{env}WEBDAV_USERNAME"
+    password: "{env}WEBDAV_PASSWORD"
