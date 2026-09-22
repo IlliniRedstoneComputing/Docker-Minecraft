@@ -101,11 +101,19 @@ image re-seeds them. This is the single most important thing to get right.
 | `velocity/velocity.toml` | **Yes** | Seeded only if absent |
 | `survival/world/**`, `project-*/world/**`, `mchprs/world/**` | **Yes** | Player-owned state |
 | `<server>/mods/**`, `velocity/plugins/**` | **No** | Re-synced from the image every start |
-| `lobby/world/**`, `onboarding/world/**` | **No** | Worlds are code artifacts, re-synced every start |
+| `lobby/world/**` | **No** | The world is a code artifact, re-synced from the image every start |
+| `onboarding/world/**` | **Yes, in practice** | Policy says code artifact, but the image ships an empty world, so nothing re-syncs it and nothing backs it up — see the caveat below |
 | `velocity/forwarding.secret` | **No** | Always rewritten from the environment |
 
 A remote administration service should refuse — or at minimum loudly warn on — writes to
 the "No" rows, since they will appear to succeed and then vanish.
+
+**Caveat on `onboarding/world/**`.** The seeding policy treats it as a code artifact, the
+same as `lobby`'s, but `src/onboarding/server/world` currently holds only a `.gitkeep`.
+The re-sync therefore copies nothing, the live world is whatever the server generated in
+the volume, and it appears in neither git nor the backup set. Treat it as durable and
+irreplaceable until that is resolved — the open question is recorded in
+[`AGENTS.md`](../AGENTS.md) item 5.
 
 ### Two required client behaviors
 
