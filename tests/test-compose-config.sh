@@ -67,6 +67,20 @@ fi
 # Self-relative, not a hardcoded count: later tasks add more consumers.
 assert_eq "$DBUSER_OK" "$DBUSER_ALL" "every LUCKPERMS_DB_USER default agrees"
 
+# The same check for the password. This half was missed when the username was
+# standardized: the database created the user with one spelling while all seven
+# clients connected with the other, so a deployment with no .env came up with
+# every LuckPerms client unable to authenticate.
+assert_not_contains "$RAW" "password_luckperms" "no stale password_luckperms default"
+DBPASS_ALL=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB_PASSWORD:-' || true)
+DBPASS_OK=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB_PASSWORD:-luckperms_password}' || true)
+if [ "$DBPASS_ALL" -gt 0 ]; then
+  pass "LUCKPERMS_DB_PASSWORD defaults are present"
+else
+  fail "LUCKPERMS_DB_PASSWORD defaults are present" "found none at all"
+fi
+assert_eq "$DBPASS_OK" "$DBPASS_ALL" "every LUCKPERMS_DB_PASSWORD default agrees"
+
 # Velocity must have a restart policy like every other long-lived service.
 VELOCITY=$(service_block velocity "$CONFIG")
 assert_contains "$VELOCITY" "restart: unless-stopped" "velocity has a restart policy"

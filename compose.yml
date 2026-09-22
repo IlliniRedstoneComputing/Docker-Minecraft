@@ -91,7 +91,7 @@ services:
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
-      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
 
       # configure the LuckPerms messaging service
       - LUCKPERMS_MESSAGING_SERVICE=sql
@@ -224,7 +224,7 @@ services:
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
-      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
 
       # Luckperms messaging service configuration
       - LUCKPERMS_MESSAGING_SERVICE=sql
@@ -262,7 +262,7 @@ services:
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
-      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
 
       # Luckperms messaging service configuration
       - LUCKPERMS_MESSAGING_SERVICE=sql
@@ -300,7 +300,7 @@ services:
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
-      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
 
       # Luckperms messaging service configuration
       - LUCKPERMS_MESSAGING_SERVICE=sql
@@ -337,7 +337,7 @@ services:
       - LUCKPERMS_DATA_ADDRESS=luckperms-db
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
-      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
     labels:
       - docker-volume-backup.stop-during-backup=true
     networks:
@@ -374,7 +374,7 @@ services:
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
-      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
 
       # Luckperms messaging service configuration
       - LUCKPERMS_MESSAGING_SERVICE=sql
@@ -412,7 +412,7 @@ services:
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
-      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
 
       # Luckperms messaging service configuration
       - LUCKPERMS_MESSAGING_SERVICE=sql

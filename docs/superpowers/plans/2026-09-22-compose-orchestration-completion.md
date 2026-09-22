@@ -1134,6 +1134,11 @@ Create `scripts/normalize-luckperms-conf.sh`:
 # The `server = "<name>"` line is deliberately left alone: that is the
 # server's identity and belongs with the server.
 #
+# src/mchprs/Config.toml is NOT handled here, even though it carries the same
+# placeholders. MCHPRS reads the database directly and has no environment
+# variable override, so its placeholders must survive; it is rendered at
+# container start instead. There is nothing for this script to do to it.
+#
 # WHY PERL AND NOT SED. These files are CRLF (684 CR / 684 LF each). On Git
 # Bash for Windows, `sed`, `awk` and `grep` are PE binaries that open files
 # in TEXT mode: they silently translate CRLF to LF on read and never restore
@@ -1148,9 +1153,25 @@ Create `scripts/normalize-luckperms-conf.sh`:
 # an LF-only line into an otherwise CRLF file, leaving mixed endings.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
-for conf in src/*/server/config/luckperms/luckperms.conf; do
+# Assert the full set is present before touching anything. Four of these five
+# live in git submodules, and an uninitialized checkout is the DEFAULT state of
+# a fresh clone. Without this guard the glob quietly matches one file, the
+# script normalizes it, prints "done" and exits 0 -- leaving four servers still
+# pointing at a Redis messenger that does not exist, with nothing in the output
+# to say so. `set -e` does not help: `perl -i` on a missing file warns to
+# stderr and still exits 0.
+shopt -s nullglob
+confs=(src/*/server/config/luckperms/luckperms.conf)
+if [ "${#confs[@]}" -ne 5 ]; then
+  printf 'expected 5 luckperms.conf files, found %d:\n' "${#confs[@]}" >&2
+  printf '  %s\n' "${confs[@]}" >&2
+  printf 'run: git submodule update --init --recursive\n' >&2
+  exit 1
+fi
+
+for conf in "${confs[@]}"; do
   echo "normalizing $conf"
 
   perl -i -pe '
@@ -1165,14 +1186,51 @@ for conf in src/*/server/config/luckperms/luckperms.conf; do
     s|^  password = "\$\{LUCKPERMS_REDIS_PASSWORD[^\r\n]*|  password = ""|;
 
     # Disable the Redis messenger, and ONLY the redis block: the nats and
-    # rabbitmq blocks have an identically-spelled `enabled` line.
-    $inredis = 1 if /^redis \{/;
-    if ($inredis && s|^  enabled = true|  enabled = false|) { $inredis = 0; }
-    $inredis = 0 if /^\}/;
+    # rabbitmq blocks have an identically-spelled `enabled` line. Top-level
+    # blocks close at column 0 while nested ones close at "  }", so /^\}/ is
+    # a safe reset.
+    #
+    # Matching the line and flipping it are deliberately separate steps. On a
+    # second run the line already reads `enabled = false`, so keying the
+    # assertion below on a successful substitution would make a correct
+    # re-run fail.
+    our ($in_redis, $seen_redis);
+    $in_redis = 1 if /^redis \{/;
+    if ($in_redis && /^  enabled = (?:true|false)/) {
+      s|^  enabled = true|  enabled = false|;
+      $in_redis = 0;
+      $seen_redis = 1;
+    }
+    $in_redis = 0 if /^\}/;
+
+    # The match is coupled to exact indentation and spacing. If upstream ever
+    # reformats the file it would silently miss, leaving LuckPerms dialling a
+    # Redis host that does not exist -- the precise failure this script exists
+    # to remove. Refuse to exit 0 on that.
+    END {
+      our $seen_redis;
+      die "redis `enabled` line never matched -- file reformatted?\n"
+        unless $seen_redis;
+    }
   ' "$conf"
 done
 
-echo "done"
+# Prove the result rather than assuming it. The CRLF check is the one that
+# matters most: it catches the next person who reaches for `sed -i` here.
+for conf in "${confs[@]}"; do
+  cr=$(tr -cd '\r' < "$conf" | wc -c)
+  lf=$(tr -cd '\n' < "$conf" | wc -c)
+  if [ "$cr" -ne "$lf" ]; then
+    printf 'CRLF damaged in %s: CR=%s LF=%s\n' "$conf" "$cr" "$lf" >&2
+    exit 1
+  fi
+  if grep -qF '${LUCKPERMS' "$conf"; then
+    printf 'placeholders remain in %s\n' "$conf" >&2
+    exit 1
+  fi
+done
+
+printf 'done: normalized and verified %d files\n' "${#confs[@]}"
 ```
 
 - [ ] **Step 2: Verify the current broken state**
@@ -1262,6 +1320,54 @@ grep -c 'user_luckperms\|password_luckperms' src/mchprs/Config.toml
 
 Expected: `0`.
 
+- [ ] **Step 5b: Align the database password default across `compose.yml`**
+
+The username half of this was standardized in Task 2; the password half was missed.
+`compose.yml` gives `MARIADB_PASSWORD` the default `luckperms_password` while all seven
+clients default `LUCKPERMS_DATA_PASSWORD` to `password_luckperms`. With no `.env`, the
+database creates the user with one spelling and every LuckPerms client authenticates
+with the other, so all seven fail to connect. Aligning the mchprs fallback in Step 5 does
+not help: `compose.yml` always sets the variable, so that fallback is unreachable.
+
+`compose.yml` is CRLF — use perl, never `sed -i`:
+
+```bash
+perl -i -pe 's|\$\{LUCKPERMS_DB_PASSWORD:-password_luckperms\}|\${LUCKPERMS_DB_PASSWORD:-luckperms_password}|g' compose.yml
+```
+
+Verify — expect `0` stale and `8` aligned (one database plus seven clients), with CRLF
+intact at 448/448:
+
+```bash
+grep -cF 'password_luckperms' compose.yml
+grep -cF 'luckperms_password' compose.yml
+printf 'CR=%s LF=%s\n' "$(tr -cd '\r' < compose.yml | wc -c)" "$(tr -cd '\n' < compose.yml | wc -c)"
+```
+
+Then add the mirror of the existing username assertion to `tests/test-compose-config.sh`,
+immediately after the `every LUCKPERMS_DB_USER default agrees` line:
+
+```bash
+# The same check for the password. This half was missed when the username was
+# standardized: the database created the user with one spelling while all seven
+# clients connected with the other, so a deployment with no .env came up with
+# every LuckPerms client unable to authenticate.
+assert_not_contains "$RAW" "password_luckperms" "no stale password_luckperms default"
+DBPASS_ALL=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB_PASSWORD:-' || true)
+DBPASS_OK=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB_PASSWORD:-luckperms_password}' || true)
+if [ "$DBPASS_ALL" -gt 0 ]; then
+  pass "LUCKPERMS_DB_PASSWORD defaults are present"
+else
+  fail "LUCKPERMS_DB_PASSWORD defaults are present" "found none at all"
+fi
+assert_eq "$DBPASS_OK" "$DBPASS_ALL" "every LUCKPERMS_DB_PASSWORD default agrees"
+```
+
+Run `bash tests/test-compose-config.sh`. Expected: `27 run, 0 failed`.
+
+Then prove the assertions can fail — reintroduce the mismatch on a single client line,
+re-run, and confirm two failures and a non-zero exit before restoring.
+
 - [ ] **Step 6: Commit the parent-repo files**
 
 The four submodule files are committed in their own repositories in Tasks 9–10.
@@ -1269,7 +1375,9 @@ The four submodule files are committed in their own repositories in Tasks 9–10
 ```bash
 git add scripts/normalize-luckperms-conf.sh \
   src/survival/server/config/luckperms/luckperms.conf \
-  src/mchprs/Config.toml
+  src/mchprs/Config.toml \
+  compose.yml \
+  tests/test-compose-config.sh
 git commit -m "refactor: drive luckperms connection settings from the environment"
 ```
 
