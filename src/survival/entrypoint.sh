@@ -35,6 +35,13 @@ render_env_placeholders() {
   # comes back ending in a dangling bare CR with mixed endings. The sentinel
   # byte restores it exactly.
   #
+  # This is defensive here: the only file this script renders,
+  # FabricProxy-Lite.toml, ends without a trailing newline (CR=4 LF=4 across
+  # five lines), so nothing is lost today. It is kept because the file carries
+  # the forwarding secret, and a stray byte in a secret file breaks auth
+  # invisibly. velocity's copy of this function renders velocity.toml, which is
+  # CRLF-terminated and genuinely hit this.
+  #
   # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
   # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
   # function would fall through with content="", truncate the file to zero

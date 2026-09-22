@@ -1520,10 +1520,18 @@ Expected: `enabled: false`, `master: mymaster`, `addresses:`, `- localhost:26379
 
 The function reads the file with `content=$(cat "$file")` and writes it back with
 `printf '%s'`. Command substitution strips **every** trailing newline and `printf '%s'`
-does not put one back, so rendering a CRLF file silently drops its final CRLF. Measured
-on a two-line CRLF fixture: 14 bytes in, 12 out, CR 2→1, LF 2→1. That is the same
-mixed-ending damage `AGENTS.md` warns about for `sed` — caused here by the function
-written to replace `sed`.
+does not put one back, so rendering a file silently drops its final line terminator.
+Measured **inside the image** on a two-line CRLF fixture: 14 bytes in, 13 out, LF 2→1,
+**CR unchanged at 2** — the file comes back ending in a dangling bare CR with mixed
+endings.
+
+Measure this in the container, not in Git Bash. Git Bash's `$(cat)` also eats the CR
+because of its text-mode reads, which yields 12 bytes and CR 2→1 — plausible-looking
+numbers for a script that does not run there. An earlier draft of this plan carried
+exactly those figures.
+
+Note this is narrower than what `AGENTS.md` describes for `sed`, which strips the CR
+from *every* line. Here one final LF is lost.
 
 Replace:
 
@@ -1803,8 +1811,9 @@ Expected: `0` AccessDenied warnings, and `secret = "velocity_secret"` — matchi
 with the same defect. It reads the file with `content=$(cat "$file")` and writes it back
 with `printf '%s'`. Command substitution strips **every** trailing newline and
 `printf '%s'` does not restore one, so rendering a file silently drops its final line
-terminator — measured at 14 bytes in, 12 out, CR 2→1 and LF 2→1 on a two-line CRLF
-fixture.
+terminator — measured **inside the image** on a two-line CRLF fixture: 14 bytes in, 13
+out, LF 2→1, **CR unchanged at 2**, leaving a dangling bare CR. (Git Bash reports 12
+bytes and CR 2→1 because its `$(cat)` eats the CR too; measure in the container.)
 
 This function renders `FabricProxy-Lite.toml`, which carries the Velocity forwarding
 secret. That file happens to end without a trailing newline today (CR=4 LF=4 across five
@@ -1958,6 +1967,15 @@ Note the `Dockerfile` — Step 1 modifies it, and an earlier draft of this step 
 which would have left the unrendered-config-copy fix uncommitted.
 
 ---
+
+> **Deliberately out of scope: `src/mchprs/entrypoint.sh`.** It carries a third copy of
+> `render_env_placeholders` still using the bare `content=$(cat "$file")`. This is a
+> considered decline, not an oversight. That form is a plain assignment, so the
+> substitution's exit status *is* the assignment's and `set -e` fires normally — only
+> the `;`-sentinel variant broke that. And `src/mchprs/Config.toml` is LF-only
+> (CR=0 LF=31) ending without a trailing newline, so the missing sentinel costs nothing.
+> The divergence is cosmetic. Revisit only if that file gains a trailing newline or
+> becomes CRLF.
 
 ## Task 9: Lobby and onboarding entrypoints
 
