@@ -380,11 +380,23 @@ git commit -m "test: add compose validation harness and fix blocking compose err
 In `tests/test-compose-config.sh`, insert immediately before the `finish` line:
 
 ```bash
-# Dead volumes and services must be gone. The commented-out sftpgo block is
-# invisible to the renderer, so that one is checked against the raw file.
+# Dead volumes and services must be gone. BOTH are checked against the raw
+# file, not the rendered config:
+#   - the sftpgo block is commented out, and the renderer strips comments
+#   - `docker compose config` PRUNES any top-level volume no service mounts,
+#     so an unmounted wireguard-module-data never appears in the render
+#     whether or not it is declared -- asserting its absence there would be
+#     tautological
 assert_not_contains "$RAW" "sftpgo" "no sftpgo remnants in compose.yml"
-assert_not_contains "$CONFIG" "wireguard-module-data" "no wireguard volume"
+assert_not_contains "$RAW" "wireguard-module-data" "no wireguard volume"
 ```
+
+> **General rule for this plan's test suites:** never assert the *absence* of
+> something in `$CONFIG` unless you have confirmed that thing would actually
+> appear in the render when present. Comments, unused volumes, and
+> `${VAR:-default}` fallbacks are all erased by rendering, so an absence
+> assertion against `$CONFIG` silently passes for any of them. Assert absence
+> against `$RAW` instead.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
