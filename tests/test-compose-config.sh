@@ -56,4 +56,12 @@ assert_contains "$VELOCITY" "restart: unless-stopped" "velocity has a restart po
 LPSA=$(service_block luckperms-standalone "$CONFIG")
 assert_not_contains "$LPSA" "healthcheck" "no redundant luckperms healthcheck override"
 
+# Dead volumes and services must be gone. Both are checked against the raw
+# file: the commented-out sftpgo block is invisible to the renderer, and
+# `docker compose config` silently prunes any top-level volume that no
+# service mounts, so an unreferenced wireguard volume would never show up
+# in $CONFIG regardless of whether it is still declared in compose.yml.
+assert_not_contains "$RAW" "sftpgo" "no sftpgo remnants in compose.yml"
+assert_not_contains "$RAW" "wireguard-module-data" "no wireguard volume"
+
 finish

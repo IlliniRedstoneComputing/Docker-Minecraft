@@ -93,39 +93,6 @@ services:
       luckperms-db:
         condition: service_healthy
 
-  # # SFTP/HTTP server for file transfers
-  # sftpgo:
-  #   image: drakkan/sftpgo:v2.6-alpine
-  #   container_name: sftpgo
-  #   restart: unless-stopped
-  #   environment:
-  #     # URL of your custom backend API endpoint
-  #     - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HOOK=${SFTPGO_AUTH_HOOK:-http://localhost:3000/api/sftpgo-auth}
-
-  #     # Optional: Send a secret key in the HTTP header to secure the hook endpoint
-  #     - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_KEY=X-SFTPGo-Hook-Secret
-  #     - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_VALUE=${SFTPGO_AUTH_SECRET:-sftpgo-secret}
-
-  #     # Define fallback scope (0 = fallback enabled, 1 = external auth only)
-  #     - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_SCOPE=0
-
-  #     # Set non-root HTTP access
-  #     - SFTPGO_HTTPD__WEB_ROOT=/files
-
-  #   volumes:
-  #     - sftpgo-data:/var/lib/sftpgo
-  #     - managed-files:/srv/sftpgo/data
-  #   healthcheck:
-  #     test: ["CMD", "sftpgo", "ping"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #   networks:
-  #     - frontend-network
-  #   depends_on:
-  #     volume_init:
-  #       condition: service_completed_successfully
-
   # WebDAV server for file access via HTTP
   webdav:
     image: sfuhrm/docker-nginx-webdav
@@ -396,11 +363,7 @@ services:
 volumes:
   managed-files:
     driver: local
-  sftpgo-data:
-    driver: local
   luckperms-db-data:
-    driver: local
-  wireguard-module-data:
     driver: local
 
 # Custom network for service communication

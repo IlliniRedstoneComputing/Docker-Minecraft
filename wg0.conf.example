@@ -1,9 +1,0 @@
-[Interface]
-Address = 10.0.0.2/24
-PrivateKey = <HOME_CONTAINER_PRIVATE_KEY>
-
-[Peer]
-PublicKey = <VPS_PUBLIC_KEY>
-Endpoint = <YOUR_VPS_PUBLIC_IP>:51820
-AllowedIPs = 10.0.0.0/24
-PersistentKeepalive = 25
