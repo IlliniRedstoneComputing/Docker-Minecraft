@@ -20,7 +20,8 @@ services:
     image: offen/docker-volume-backup:latest
     restart: unless-stopped
     env_file:
-      - backup.config
+      - path: backup.config
+        required: false
     volumes:
       - type: volume
         source: managed-files
@@ -75,7 +76,7 @@ services:
       - LUCKPERMS_STORAGE_METHOD=mariadb
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
-      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
 
       # configure the LuckPerms messaging service
@@ -85,19 +86,6 @@ services:
       - LUCKPERMS_REST_HTTP_PORT=8080
       - LUCKPERMS_REST_AUTH=true
       - LUCKPERMS_REST_AUTH_KEYS=${LUCKPERMS_SECRET:-luckpermssecret}
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--quiet",
-          "--tries=1",
-          "--spider",
-          "http://localhost:3001/healthz",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
     networks:
       - minecraft-network
       - frontend-network
@@ -142,13 +130,9 @@ services:
   webdav:
     image: sfuhrm/docker-nginx-webdav
     container_name: webdav
-    ports:
-      - "8080:80"
     environment:
       - USERNAME=${WEBDAV_USERNAME:-webdavuser}
       - PASSWORD=${WEBDAV_PASSWORD:-SecretPassword123}
-    volumes:
-      - /path/to/your/files:/media/data
     restart: unless-stopped
 
   # Proxy for Minecraft servers
@@ -158,6 +142,7 @@ services:
       args:
         - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
     container_name: velocity
+    restart: unless-stopped
     ports:
       - 25565:25565
     environment:
@@ -199,7 +184,7 @@ services:
       - LUCKPERMS_STORAGE_METHOD=mariadb
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
-      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
 
       # Luckperms messaging service configuration
@@ -237,7 +222,7 @@ services:
       - LUCKPERMS_STORAGE_METHOD=mariadb
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
-      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
 
       # Luckperms messaging service configuration
@@ -275,7 +260,7 @@ services:
       - LUCKPERMS_STORAGE_METHOD=mariadb
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
-      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
 
       # Luckperms messaging service configuration
@@ -312,7 +297,7 @@ services:
       # Luckperms database configuration
       - LUCKPERMS_DATA_ADDRESS=luckperms-db
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
-      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
     labels:
       - docker-volume-backup.stop-during-backup=true
@@ -349,7 +334,7 @@ services:
       - LUCKPERMS_STORAGE_METHOD=mariadb
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
-      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
 
       # Luckperms messaging service configuration
@@ -387,7 +372,7 @@ services:
       - LUCKPERMS_STORAGE_METHOD=mariadb
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
-      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
 
       # Luckperms messaging service configuration
