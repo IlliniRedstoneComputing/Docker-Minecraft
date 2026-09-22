@@ -968,8 +968,21 @@ CFD=$(service_block cloudflared "$CONFIG")
 # Assert the pinned image rather than the bare word "cloudflared", which
 # would also match the container name and prove nothing about the image.
 assert_contains "$CFD" "cloudflare/cloudflared:2026.9.1" "cloudflared uses a pinned image"
-assert_contains "$CFD" "TUNNEL_TOKEN" "cloudflared reads TUNNEL_TOKEN"
 assert_not_contains "$CFD" "ports:" "cloudflared declares no ports"
+
+# The token wiring is asserted against $RAW, not $CONFIG. Rendering
+# substitutes the value and erases BOTH the source variable name and the
+# `:?` required guard -- the rendered line is just
+# `TUNNEL_TOKEN: <value>`. A $CONFIG needle therefore proves only that the
+# destination key is spelled TUNNEL_TOKEN. Verified: rewiring the source to
+# ${WEBDAV_PASSWORD:-fallback}, dropping the guard entirely, still passed.
+#
+# This single needle covers all three properties at once: the destination
+# key cloudflared requires, the correct source variable, and the `:?` guard
+# that makes a missing token fail loudly instead of silently running empty.
+CFD_RAW=$(service_block cloudflared "$RAW")
+assert_contains "$CFD_RAW" 'TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:?' \
+  "the tunnel token is sourced from CLOUDFLARE_TUNNEL_TOKEN and required"
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1049,6 +1062,18 @@ WEBDAV_PASSWORD=change_me_webdav_password
 # Add one public hostname: mc-admin.illiniredstone.org -> http://caddy:80
 CLOUDFLARE_TUNNEL_TOKEN=change_me_tunnel_token
 ```
+
+This drops the dead `SFTPGO_*`, `LUCKPERMS_MESSENGER_PASSWORD`, and
+`MINECRAFT_HOSTNAME` variables, and fixes the "copy to `.env.local`" instruction, which
+was wrong — Compose reads `.env`.
+
+The file must end with a trailing newline. Its previous version did not, which silently
+corrupted an append in an earlier task.
+
+Keep **CRLF** line endings. Every other tracked text file here is CRLF (`compose.yml`,
+`.gitignore`), `.gitattributes` sets only `text=auto` with an `eol=lf` override for
+`*.sh`, and `core.autocrlf` is `false` — so rewriting this one as LF introduces an
+inconsistency nothing asked for.
 
 - [ ] **Step 5: Add the tunnel token to the local `.env`**
 
