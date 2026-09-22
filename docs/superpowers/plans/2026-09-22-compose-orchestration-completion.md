@@ -1133,11 +1133,18 @@ Create `scripts/normalize-luckperms-conf.sh`:
 # The `server = "<name>"` line is deliberately left alone: that is the
 # server's identity and belongs with the server.
 #
-# CRLF: these files are CRLF in the repository (684 CR / 684 LF each). A bare
-# `sed -i` would strip the CR from every line it rewrites and leave the rest
-# CRLF, producing a mixed-ending file and a diff touching all 680 lines. So
-# each file is converted to LF, edited, and converted back only if it started
-# as CRLF.
+# WHY PERL AND NOT SED. These files are CRLF (684 CR / 684 LF each). On Git
+# Bash for Windows, `sed`, `awk` and `grep` are PE binaries that open files
+# in TEXT mode: they silently translate CRLF to LF on read and never restore
+# it, so `sed -i` strips the carriage return from EVERY line, not just the
+# ones it rewrites, and `grep -q $'\r'` cannot detect a carriage return at
+# all. Measured on this toolchain: sed -i, sed with redirection and awk with
+# redirection all reduce CR from 3 to 0 on a three-line CRLF fixture, while
+# `perl -i -pe` preserves all 3. Hence perl.
+#
+# The patterns use [^\r\n]* rather than .* for the same reason: `.` matches
+# a carriage return, so `.*` would swallow it and the replacement would emit
+# an LF-only line into an otherwise CRLF file, leaving mixed endings.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -1145,37 +1152,23 @@ cd "$(dirname "$0")/.."
 for conf in src/*/server/config/luckperms/luckperms.conf; do
   echo "normalizing $conf"
 
-  had_crlf=0
-  if grep -q $'\r' "$conf"; then
-    had_crlf=1
-    sed -i 's/\r$//' "$conf"
-  fi
+  perl -i -pe '
+    s|^storage-method = [^\r\n]*|storage-method = "h2"|;
+    s|^  address = "\$\{LUCKPERMS_DATA_ADDRESS[^\r\n]*|  address = "localhost:3306"|;
+    s|^  database = "\$\{LUCKPERMS_DATA_DATABASE[^\r\n]*|  database = "minecraft"|;
+    s|^  username = "\$\{LUCKPERMS_DATA_USERNAME[^\r\n]*|  username = "root"|;
+    s|^  password = "\$\{LUCKPERMS_DATA_PASSWORD[^\r\n]*|  password = ""|;
+    s|^messaging-service = [^\r\n]*|messaging-service = "sql"|;
+    s|^  address = "\$\{LUCKPERMS_REDIS_ADDRESS[^\r\n]*|  address = "localhost"|;
+    s|^  username = "\$\{LUCKPERMS_REDIS_USERNAME[^\r\n]*|  username = ""|;
+    s|^  password = "\$\{LUCKPERMS_REDIS_PASSWORD[^\r\n]*|  password = ""|;
 
-  sed -i \
-    -e 's|^storage-method = .*|storage-method = "h2"|' \
-    -e 's|^  address = "\${LUCKPERMS_DATA_ADDRESS.*|  address = "localhost:3306"|' \
-    -e 's|^  database = "\${LUCKPERMS_DATA_DATABASE.*|  database = "minecraft"|' \
-    -e 's|^  username = "\${LUCKPERMS_DATA_USERNAME.*|  username = "root"|' \
-    -e 's|^  password = "\${LUCKPERMS_DATA_PASSWORD.*|  password = ""|' \
-    -e 's|^messaging-service = .*|messaging-service = "sql"|' \
-    -e 's|^  address = "\${LUCKPERMS_REDIS_ADDRESS.*|  address = "localhost"|' \
-    -e 's|^  username = "\${LUCKPERMS_REDIS_USERNAME.*|  username = ""|' \
-    -e 's|^  password = "\${LUCKPERMS_REDIS_PASSWORD.*|  password = ""|' \
-    "$conf"
-
-  # Disable the Redis messenger. Only the `enabled` line inside the redis
-  # block is touched, located by finding the block and editing the line after.
-  awk '
-    /^redis \{/ { inredis = 1 }
-    inredis && /^  enabled = true/ { print "  enabled = false"; inredis = 0; next }
-    /^\}/ { inredis = 0 }
-    { print }
-  ' "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
-
-  # Restore CRLF only if the file had it to begin with.
-  if [ "$had_crlf" -eq 1 ]; then
-    sed -i 's/$/\r/' "$conf"
-  fi
+    # Disable the Redis messenger, and ONLY the redis block: the nats and
+    # rabbitmq blocks have an identically-spelled `enabled` line.
+    $inredis = 1 if /^redis \{/;
+    if ($inredis && s|^  enabled = true|  enabled = false|) { $inredis = 0; }
+    $inredis = 0 if /^\}/;
+  ' "$conf"
 done
 
 echo "done"

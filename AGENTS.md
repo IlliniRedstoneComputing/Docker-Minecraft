@@ -75,6 +75,39 @@ Those are the only volumes holding state that accrues over time.
 
 Do not extend backup coverage to the other services.
 
+## Platform: CRLF files and the Git Bash toolchain
+
+Most tracked text files here are **CRLF**: `compose.yml`, `.gitignore`,
+`.env.example`, and all five `luckperms.conf` files (684 CR / 684 LF each).
+`.gitattributes` sets `text=auto` with an `eol=lf` override only for `*.sh`, and
+`core.autocrlf` is `false`.
+
+On Git Bash for Windows, `sed`, `awk` and `grep` are PE binaries that open files in
+**text mode**. They silently translate CRLF to LF on read and never restore it. Measured
+on a three-line CRLF fixture:
+
+| Command | CR preserved |
+| --- | --- |
+| `grep -q $'\r' file` | **cannot detect CR at all** |
+| `sed -i 's/x/y/' file` | no — strips CR from *every* line, not just rewritten ones |
+| `sed 's/x/y/' < in > out` | no |
+| `awk '{...}' < in > out` | no |
+| `perl -i -pe 's/x/y/' file` | **yes** |
+
+So:
+
+- **Use `perl -i -pe` to edit CRLF files in place.** Never `sed -i`.
+- **Use `[^\r\n]*` rather than `.*`** in those patterns. `.` matches a carriage return,
+  so `.*` swallows it and the replacement emits an LF-only line into an otherwise CRLF
+  file, leaving mixed endings.
+- **Detect line endings by counting bytes**, not with grep:
+  `tr -cd '\r' < file | wc -c` versus `tr -cd '\n' < file | wc -c`. Redirection opens in
+  binary mode, so `tr` reports correctly.
+- `cat -A` through a pipe can also strip CR as an MSYS artifact. Byte counting is
+  authoritative.
+
+`scripts/normalize-luckperms-conf.sh` documents this inline and is the worked example.
+
 ## Project conventions
 
 - **LuckPerms wiring comes from environment variables, not config files.** LuckPerms
