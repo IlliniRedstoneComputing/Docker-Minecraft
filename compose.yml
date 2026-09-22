@@ -96,10 +96,18 @@ services:
   # WebDAV interface over the shared server-data volume.
   # Single service account by design -- see src/webdav/config.yml.
   webdav:
-    image: ghcr.io/hacdias/webdav:latest
+    # Pinned, not :latest -- this is the one service reachable from the
+    # internet through the tunnel, so an unreviewed image must not land here
+    # on the next pull.
+    image: ghcr.io/hacdias/webdav:v5.16.0
     container_name: webdav
     restart: unless-stopped
     command: ["-c", "/config.yml"]
+    # Both Minecraft base images run as uid 1000. Matching it means files
+    # created through WebDAV stay rewritable by the servers, and vice versa.
+    # The image is FROM scratch and binds an unprivileged port, so it needs
+    # no root. volume_init's chmod 777 covers directory traversal.
+    user: "1000:1000"
     environment:
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:?WEBDAV_USERNAME must be set in .env}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:?WEBDAV_PASSWORD must be set in .env}

@@ -39,9 +39,17 @@ RAW=$(cat compose.yml)
 BACKUP=$(service_block backup "$RAW")
 assert_contains "$BACKUP" "required: false" "backup.config is optional"
 
-# Exactly one published port in the whole stack.
+# Exactly one published port in the whole stack. This is the invariant the
+# entire tunnel architecture rests on, so it is guarded two ways.
+#
+# Counting `published:` alone is NOT sufficient: the short form
+# `ports: - "6065"` publishes an ephemeral host port but renders only
+# `mode/target/protocol`, with no `published:` key at all. Verified. So the
+# number of services declaring a `ports:` block is counted as well.
 PUBLISHED=$(printf '%s\n' "$CONFIG" | grep -cE '^[[:space:]]+published:' || true)
 assert_eq "$PUBLISHED" "1" "exactly one published port"
+PORTBLOCKS=$(printf '%s\n' "$CONFIG" | grep -cE '^[[:space:]]+ports:' || true)
+assert_eq "$PORTBLOCKS" "1" "exactly one service declares ports at all"
 assert_contains "$CONFIG" "target: 25565" "the published port targets 25565"
 
 # Credential defaults must agree between the database and its clients. Checked
@@ -90,6 +98,22 @@ assert_contains "$WEBDAV" "hacdias/webdav" "webdav uses the hacdias image"
 assert_contains "$WEBDAV" "frontend-network" "webdav is on frontend-network"
 assert_contains "$WEBDAV" "target: /data" "managed-files is mounted at /data"
 assert_not_contains "$WEBDAV" "/path/to/your/files" "no placeholder mount"
-assert_not_contains "$WEBDAV" "published" "webdav publishes no port"
+
+# Assert on the `ports:` KEY, not on `published:`. The short form
+# `ports: - "6065"` publishes an ephemeral host port while rendering no
+# `published:` key, so a `published` needle would pass on a service that is
+# in fact reachable from the host.
+assert_not_contains "$WEBDAV" "ports:" "webdav declares no ports at all"
+
+# Network isolation is the containment boundary for an internet-reachable
+# service holding full write access to every world. Presence of
+# frontend-network above does not preclude ALSO being on minecraft-network.
+assert_not_contains "$WEBDAV" "minecraft-network" "webdav is not on the minecraft network"
+
+# The config mount must stay read-only, and the process must not run as root:
+# files it creates as root cannot be rewritten in place by the Minecraft
+# servers, which run as uid 1000.
+assert_contains "$WEBDAV" "read_only: true" "the config mount is read-only"
+assert_contains "$WEBDAV" "user: 1000:1000" "webdav does not run as root"
 
 finish
