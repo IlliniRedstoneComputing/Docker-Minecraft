@@ -1464,12 +1464,12 @@ perl -i -pe '
   s|^  password: \$\{LUCKPERMS_REDIS_PASSWORD[^\r\n]*|  password: ""|;
 
   s|^  enabled: \$\{LUCKPERMS_NATS_ENABLED[^\r\n]*|  enabled: false|;
-  s|^  address: \$\{LUCKPERMS_NATS_ADDRESS[^\r\n]*|  address: localhost:4222|;
+  s|^  address: \$\{LUCKPERMS_NATS_ADDRESS[^\r\n]*|  address: localhost|;
   s|^  username: \$\{LUCKPERMS_NATS_USERNAME[^\r\n]*|  username: ""|;
   s|^  password: \$\{LUCKPERMS_NATS_PASSWORD[^\r\n]*|  password: ""|;
 
   s|^  enabled: \$\{LUCKPERMS_RABBITMQ_ENABLED[^\r\n]*|  enabled: false|;
-  s|^  address: \$\{LUCKPERMS_RABBITMQ_ADDRESS[^\r\n]*|  address: localhost:5672|;
+  s|^  address: \$\{LUCKPERMS_RABBITMQ_ADDRESS[^\r\n]*|  address: localhost|;
   s|^  vhost: \$\{LUCKPERMS_RABBITMQ_VHOST[^\r\n]*|  vhost: "/"|;
   s|^  username: \$\{LUCKPERMS_RABBITMQ_USERNAME[^\r\n]*|  username: guest|;
   s|^  password: \$\{LUCKPERMS_RABBITMQ_PASSWORD[^\r\n]*|  password: guest|;
@@ -1484,7 +1484,7 @@ must be inserted, not pasted over the neighbouring comment lines:
 
 ```bash
 perl -i -pe '
-  if (s|^storage-method: h2|# Connection settings come from LUCKPERMS_* environment variables in\r\n# compose.yml, which LuckPerms resolves ahead of this file. Do not add\r\n# connection settings here.\r\nstorage-method: h2|) { }
+  if (s|^storage-method: h2|#\r\n# Connection settings come from LUCKPERMS_* environment variables in\r\n# compose.yml, which LuckPerms resolves ahead of this file. Do not add\r\n# connection settings here.\r\nstorage-method: h2|) { }
 ' src/velocity/server/plugins/luckperms/config.yml
 ```
 
@@ -1499,10 +1499,10 @@ grep -c '^#' src/velocity/server/plugins/luckperms/config.yml
 git diff --stat src/velocity/server/plugins/luckperms/config.yml
 ```
 
-Expected: `0` placeholders; CR and LF equal and **3 higher than 623** (626/626) because
-the inserted note adds three lines; the `^#` comment count **increases by exactly 3**
-for the same reason and no upstream comment is lost; and the diff shows roughly 22
-changed lines, not 600. A diff of several hundred lines means the whole file was
+Expected: `0` placeholders; CR and LF equal and **4 higher than 623** (627/627) because
+the inserted note adds four lines (a bare `#` separator plus three of prose); the `^#`
+comment count goes **387 → 391**, increasing by exactly those four, so no upstream
+comment is lost; and the diff shows roughly 24 changed lines, not 600. A diff of several hundred lines means the whole file was
 rewritten with the wrong line endings — revert and use perl.
 
 Also confirm the `sentinel:` sub-block is untouched, since it never held placeholders:
@@ -1514,25 +1514,66 @@ grep -A6 '  sentinel:' src/velocity/server/plugins/luckperms/config.yml
 Expected: `enabled: false`, `master: mymaster`, `addresses:`, `- localhost:26379`,
 `username: ""`, `password: ""` — exactly as before.
 
-- [ ] **Step 3: Apply the seeding policy to the Velocity entrypoint**
+- [ ] **Step 3: Fix the trailing-newline loss in `render_env_placeholders`**
+
+`src/velocity/entrypoint.sh` is LF-only (0 CR / 78 LF) — keep it that way.
+
+The function reads the file with `content=$(cat "$file")` and writes it back with
+`printf '%s'`. Command substitution strips **every** trailing newline and `printf '%s'`
+does not put one back, so rendering a CRLF file silently drops its final CRLF. Measured
+on a two-line CRLF fixture: 14 bytes in, 12 out, CR 2→1, LF 2→1. That is the same
+mixed-ending damage `AGENTS.md` warns about for `sed` — caused here by the function
+written to replace `sed`.
+
+Replace:
+
+```bash
+  content=$(cat "$file")
+```
+
+with:
+
+```bash
+  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
+  # $(cat file) strips every trailing newline and `printf '%s'` does not put
+  # one back, so rendering a CRLF file silently drops its final CRLF --
+  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
+  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
+  # sed, caused here by the function written to replace sed.
+  content=$(cat "$file"; printf x); content="${content%x}"
+```
+
+- [ ] **Step 4: Apply the seeding policy to the Velocity entrypoint**
 
 In `src/velocity/entrypoint.sh`, replace everything from the line `echo "Injecting secrets..."` to the end of the file with:
 
 ```bash
 echo "Injecting secrets..."
 
-# velocity.toml references forwarding-secret-file and holds no secret itself,
-# but render it anyway so future placeholders work.
+# velocity.toml points at forwarding-secret-file and holds no secret itself.
+# Rendered anyway so a placeholder added later works on a FRESH volume -- note
+# it will not reach an existing one, because velocity.toml is seed-if-absent
+# below.
 render_env_placeholders "$CONFIG_DIR/velocity.toml"
 render_env_placeholders "$CONFIG_DIR/forwarding.secret"
 
 echo "Secrets injected successfully."
 
-# Image-controlled: always re-synced so plugin upgrades actually land.
+# Image-controlled: the image owns the plugin jars AND the configs shipped
+# beside them, so edits under plugins/ do not survive a restart.
+#
+# Clearing the jars first is what makes an UPGRADE work. Jar filenames carry
+# the version, so a bump is a rename, and copying without deleting would leave
+# both versions in the folder for Velocity to load as duplicate plugin ids.
+# The glob is top-level only, so runtime state like plugins/viabackwards/ and
+# plugins/luckperms/libs/ survives.
 mkdir -p /server/plugins
+rm -f /server/plugins/*.jar
 cp -a "$CONFIG_DIR/plugins/." /server/plugins/
 
-# Always rewritten so secret rotation propagates.
+# Always rewritten so secret rotation propagates. This lands on container
+# recreate -- which a changed .env forces -- rather than on a bare
+# `docker restart`, where the rendered copy holds no token left to re-render.
 cp -a "$CONFIG_DIR/forwarding.secret" /server/forwarding.secret
 
 # Admin-editable over WebDAV: seeded only when absent, so operators can add
@@ -1546,9 +1587,59 @@ echo "Copying complete. Starting Velocity..."
 exec "/usr/bin/run-bungeecord.sh"
 ```
 
-Note the removal of `render_env_placeholders "$CONFIG_DIR/plugins/luckperms/config.yml"` — that file no longer contains placeholders.
+Three things to note about this rewrite:
 
-- [ ] **Step 4: Rebuild and verify Velocity joins shared storage**
+- `render_env_placeholders "$CONFIG_DIR/plugins/luckperms/config.yml"` is REMOVED, because after Step 2 that file no longer contains placeholders. Confirm nothing else regressed: `velocity.toml` has no `${...}` tokens and `forwarding.secret` is exactly `${VELOCITY_SECRET}` and is still rendered.
+- The old `cp -a /usr/src/init_data/plugins /server/plugins` is replaced by `mkdir -p` plus `cp -a "$CONFIG_DIR/plugins/." /server/plugins/`. The old form copies the directory INTO an existing `/server/plugins`, producing `/server/plugins/plugins`. The live volume already carries ~9 MB of that damage from before this fix; the fix stops it recurring but does not clean it up.
+- `rm -f /server/plugins/*.jar` is what makes a plugin **upgrade** work. Verified on a fixture: renaming `Plugin-1.0.jar` to `Plugin-1.1.jar` in the image and re-running the copy alone leaves BOTH jars in the volume, which Velocity would load as duplicate plugin ids. With the `rm -f`, only the new jar remains, while `plugins/viabackwards/` and the nested `plugins/luckperms/libs/*.jar` survive — the glob is top-level only.
+
+Everything above `echo "Injecting secrets..."` — the shebang, `set -e`, `CONFIG_DIR`, and the whole `render_env_placeholders` function — must otherwise be preserved byte for byte.
+
+- [ ] **Step 5: Assert the wiring in the test suite**
+
+Nothing currently fails if velocity's whole `LUCKPERMS_*` block is deleted — the suite
+only checks velocity for `restart: unless-stopped`. Add the substance.
+
+First, the database NAME. `LUCKPERMS_DB` is the third member of the credential family
+alongside `LUCKPERMS_DB_USER` and `LUCKPERMS_DB_PASSWORD`, and it is the only one with
+no guard. Insert after the `every LUCKPERMS_DB_PASSWORD default agrees` line in
+`tests/test-compose-config.sh`:
+
+```bash
+# The database NAME, the third member of the credential family. luckperms-db
+# creates MARIADB_DATABASE from ${LUCKPERMS_DB:-...} and eight clients connect
+# to ${LUCKPERMS_DB:-...}; a drift between them fails only when .env is absent,
+# which is exactly how the username and password mismatches went unnoticed.
+DBNAME_ALL=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB:-' || true)
+DBNAME_OK=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB:-luckperms}' || true)
+if [ "$DBNAME_ALL" -gt 0 ]; then
+  pass "LUCKPERMS_DB defaults are present"
+else
+  fail "LUCKPERMS_DB defaults are present" "found none at all"
+fi
+assert_eq "$DBNAME_OK" "$DBNAME_ALL" "every LUCKPERMS_DB default agrees"
+```
+
+Then, after the `velocity has a restart policy` line:
+
+```bash
+# Velocity must reach the SHARED database like every backend. Without these
+# variables LuckPerms falls back to the config file's inert `h2`, and the proxy
+# silently runs on a private H2 file whose permissions diverge from everyone
+# else's -- with no error anywhere to say so.
+assert_contains "$VELOCITY" "LUCKPERMS_STORAGE_METHOD: mariadb" "velocity uses shared storage"
+assert_contains "$VELOCITY" "LUCKPERMS_DATA_ADDRESS: luckperms-db:3306" "velocity points at the shared database"
+assert_contains "$VELOCITY" "LUCKPERMS_MESSAGING_SERVICE: sql" "velocity uses sql messaging"
+```
+
+Run `bash tests/test-compose-config.sh`. Expected: `32 run, 0 failed`.
+
+Prove the assertions can fail before trusting them. Deleting velocity's `LUCKPERMS_*`
+block gives `32 run, 3 failed`; changing one client's `${LUCKPERMS_DB:-luckperms}` to a
+different default gives `every LUCKPERMS_DB default agrees / expected '9', got '8'`.
+Restore `compose.yml` afterwards and confirm CR=458 LF=458.
+
+- [ ] **Step 6: Rebuild and verify Velocity joins shared storage**
 
 ```bash
 docker compose up -d --build velocity
@@ -1558,18 +1649,37 @@ docker compose logs velocity | grep -i "Resolved configuration value from enviro
 
 Expected: lines including `LUCKPERMS_STORAGE_METHOD = mariadb` and `LUCKPERMS_DATA_ADDRESS = luckperms-db:3306`.
 
-- [ ] **Step 5: Verify no H2 database was created**
+- [ ] **Step 7: Verify no H2 database was created**
 
 ```bash
 docker compose exec velocity sh -c 'ls /server/plugins/luckperms/ 2>/dev/null | grep -i h2 || echo NO_H2'
 ```
 
-Expected: `NO_H2`. An H2 file here means the environment variables did not take effect.
+Expected: `NO_H2` on a fresh volume.
 
-- [ ] **Step 6: Commit**
+**On a volume that has booted before this fix, expect to see `luckperms-h2-v2.mv.db`
+instead, and that is not a failure.** The `/server` volume is persistent and carries the
+H2 file created back when `storage-method` rendered to the literal `h2` — the very bug
+this task fixes. Distinguish a stale artifact from a live one by its timestamp and by
+what the boot actually loaded, not by its presence:
 
 ```bash
-git add compose.yml src/velocity/server/plugins/luckperms/config.yml src/velocity/entrypoint.sh
+docker inspect velocity --format '{{.State.StartedAt}}'
+docker compose exec velocity sh -c 'ls -la --time-style=full-iso /server/plugins/luckperms/'
+docker compose logs velocity | grep -E 'Loading storage provider|Loading messaging service'
+docker compose logs velocity | grep -ci 'h2'
+```
+
+The file is stale if its mtime predates `StartedAt`, the log says
+`Loading storage provider... [MARIADB]` and `Loading messaging service... [SQL]`, and the
+h2 grep count is `0`. Leave it alone — it is inert data on a live volume, and deleting it
+is an operator decision, not part of this task.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add compose.yml src/velocity/server/plugins/luckperms/config.yml \
+  src/velocity/entrypoint.sh tests/test-compose-config.sh
 git commit -m "fix: connect velocity luckperms to shared storage and seed config safely"
 ```
 

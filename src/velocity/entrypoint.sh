@@ -29,7 +29,13 @@ CONFIG_DIR="/usr/src/init_data"
 render_env_placeholders() {
   local file="$1" content result pattern full varname default value
 
-  content=$(cat "$file")
+  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
+  # $(cat file) strips every trailing newline and `printf '%s'` does not put
+  # one back, so rendering a CRLF file silently drops its final CRLF --
+  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
+  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
+  # sed, caused here by the function written to replace sed.
+  content=$(cat "$file"; printf x); content="${content%x}"
   result=""
   # Matches ${NAME} or ${NAME:-default}. The default text may be empty
   # (${NAME:-}) but cannot itself contain a literal '}'.
@@ -60,18 +66,30 @@ render_env_placeholders() {
 
 echo "Injecting secrets..."
 
-# velocity.toml references forwarding-secret-file and holds no secret itself,
-# but render it anyway so future placeholders work.
+# velocity.toml points at forwarding-secret-file and holds no secret itself.
+# Rendered anyway so a placeholder added later works on a FRESH volume -- note
+# it will not reach an existing one, because velocity.toml is seed-if-absent
+# below.
 render_env_placeholders "$CONFIG_DIR/velocity.toml"
 render_env_placeholders "$CONFIG_DIR/forwarding.secret"
 
 echo "Secrets injected successfully."
 
-# Image-controlled: always re-synced so plugin upgrades actually land.
+# Image-controlled: the image owns the plugin jars AND the configs shipped
+# beside them, so edits under plugins/ do not survive a restart.
+#
+# Clearing the jars first is what makes an UPGRADE work. Jar filenames carry
+# the version, so a bump is a rename, and copying without deleting would leave
+# both versions in the folder for Velocity to load as duplicate plugin ids.
+# The glob is top-level only, so runtime state like plugins/viabackwards/ and
+# plugins/luckperms/libs/ survives.
 mkdir -p /server/plugins
+rm -f /server/plugins/*.jar
 cp -a "$CONFIG_DIR/plugins/." /server/plugins/
 
-# Always rewritten so secret rotation propagates.
+# Always rewritten so secret rotation propagates. This lands on container
+# recreate -- which a changed .env forces -- rather than on a bare
+# `docker restart`, where the rendered copy holds no token left to re-render.
 cp -a "$CONFIG_DIR/forwarding.secret" /server/forwarding.secret
 
 # Admin-editable over WebDAV: seeded only when absent, so operators can add

@@ -81,9 +81,30 @@ else
 fi
 assert_eq "$DBPASS_OK" "$DBPASS_ALL" "every LUCKPERMS_DB_PASSWORD default agrees"
 
+# The database NAME, the third member of the credential family. luckperms-db
+# creates MARIADB_DATABASE from ${LUCKPERMS_DB:-...} and eight clients connect
+# to ${LUCKPERMS_DB:-...}; a drift between them fails only when .env is absent,
+# which is exactly how the username and password mismatches went unnoticed.
+DBNAME_ALL=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB:-' || true)
+DBNAME_OK=$(printf '%s\n' "$RAW" | grep -cF '${LUCKPERMS_DB:-luckperms}' || true)
+if [ "$DBNAME_ALL" -gt 0 ]; then
+  pass "LUCKPERMS_DB defaults are present"
+else
+  fail "LUCKPERMS_DB defaults are present" "found none at all"
+fi
+assert_eq "$DBNAME_OK" "$DBNAME_ALL" "every LUCKPERMS_DB default agrees"
+
 # Velocity must have a restart policy like every other long-lived service.
 VELOCITY=$(service_block velocity "$CONFIG")
 assert_contains "$VELOCITY" "restart: unless-stopped" "velocity has a restart policy"
+
+# Velocity must reach the SHARED database like every backend. Without these
+# variables LuckPerms falls back to the config file's inert `h2`, and the proxy
+# silently runs on a private H2 file whose permissions diverge from everyone
+# else's -- with no error anywhere to say so.
+assert_contains "$VELOCITY" "LUCKPERMS_STORAGE_METHOD: mariadb" "velocity uses shared storage"
+assert_contains "$VELOCITY" "LUCKPERMS_DATA_ADDRESS: luckperms-db:3306" "velocity points at the shared database"
+assert_contains "$VELOCITY" "LUCKPERMS_MESSAGING_SERVICE: sql" "velocity uses sql messaging"
 
 # The healthcheck override must be PRESENT and must match the real response
 # schema. The base image's inherited check greps '"up":true' while the endpoint
