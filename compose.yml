@@ -122,6 +122,21 @@ services:
       volume_init:
         condition: service_completed_successfully
 
+  # Internal path router between the tunnel and the admin services.
+  caddy:
+    # Pinned for the same reason webdav is: this sits directly in the
+    # request path from the internet.
+    image: caddy:2.11.4-alpine
+    container_name: caddy
+    restart: unless-stopped
+    volumes:
+      - ./src/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - frontend-network
+    depends_on:
+      - webdav
+      - luckperms-standalone
+
   # Proxy for Minecraft servers
   velocity:
     build:
