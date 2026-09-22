@@ -965,8 +965,11 @@ In `tests/test-compose-config.sh`, insert immediately before the `finish` line:
 
 ```bash
 CFD=$(service_block cloudflared "$CONFIG")
-assert_contains "$CFD" "cloudflared" "cloudflared service exists"
+# Assert the pinned image rather than the bare word "cloudflared", which
+# would also match the container name and prove nothing about the image.
+assert_contains "$CFD" "cloudflare/cloudflared:2026.9.1" "cloudflared uses a pinned image"
 assert_contains "$CFD" "TUNNEL_TOKEN" "cloudflared reads TUNNEL_TOKEN"
+assert_not_contains "$CFD" "ports:" "cloudflared declares no ports"
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -987,7 +990,8 @@ In `compose.yml`, add immediately after the `caddy` service:
   # because Caddy does all routing, so the dashboard needs exactly one public
   # hostname: mc-admin.illiniredstone.org -> http://caddy:80
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Pinned like caddy and webdav: this terminates the public entrypoint.
+    image: cloudflare/cloudflared:2026.9.1
     container_name: cloudflared
     restart: unless-stopped
     command: tunnel --no-autoupdate run
@@ -998,6 +1002,11 @@ In `compose.yml`, add immediately after the `caddy` service:
     depends_on:
       - caddy
 ```
+
+**Do not start this service locally.** With the placeholder token in `.env` it cannot
+authenticate and will restart-loop. That is expected and harmless, but it is noise in
+`docker compose ps` and logs. It is configured here and verified for the first time
+against a real tunnel by whoever deploys it.
 
 - [ ] **Step 4: Rewrite the environment template**
 
@@ -1044,8 +1053,14 @@ CLOUDFLARE_TUNNEL_TOKEN=change_me_tunnel_token
 - [ ] **Step 5: Add the tunnel token to the local `.env`**
 
 ```bash
-printf 'CLOUDFLARE_TUNNEL_TOKEN=placeholder-not-used-in-local-tests\n' >> .env
+[ -s .env ] && [ -n "$(tail -c1 .env)" ] && printf '\n' >> .env
+grep -q '^CLOUDFLARE_TUNNEL_TOKEN=' .env \
+  || printf 'CLOUDFLARE_TUNNEL_TOKEN=placeholder-not-used-in-local-tests\n' >> .env
+grep -c '^CLOUDFLARE_TUNNEL_TOKEN=' .env
 ```
+
+Expected: `1`. Guarded so a re-run does not duplicate the entry, and newline-terminated
+first so the append cannot merge onto a previous line.
 
 - [ ] **Step 6: Run the test to verify it passes**
 
@@ -2495,15 +2510,19 @@ exit "$FAILED"
 This proves a clean deployment works, not just an incrementally-patched one.
 
 ```bash
-docker compose down -v
-docker compose up -d --build volume_init luckperms-db luckperms-standalone luckperms-init webdav caddy velocity survival mchprs
+docker compose -f compose.yml down -v
+docker compose -f compose.yml up -d --build volume_init luckperms-db luckperms-standalone luckperms-init webdav caddy velocity survival mchprs
 sleep 120
-docker compose up -d --build lobby onboarding project-0 project-1
+docker compose -f compose.yml up -d --build lobby onboarding project-0 project-1
 sleep 150
-docker compose ps
+docker compose -f compose.yml ps
 ```
 
 Expected: all services `running`; `luckperms-db`, `luckperms-standalone`, and `velocity` also `healthy`; `volume_init` and `luckperms-init` `exited (0)`.
+
+**`cloudflared` is deliberately excluded from both `up` commands.** With the placeholder
+token in `.env` it cannot authenticate and would restart-loop, which is noise rather
+than a failure. It is verified against a real tunnel at deploy time, not here.
 
 - [ ] **Step 3: Run every suite**
 
