@@ -85,7 +85,13 @@ set -uo pipefail
 
 : "${_ASSERT_RUN_LOG:=$(mktemp)}"
 : "${_ASSERT_FAIL_LOG:=$(mktemp)}"
-export _ASSERT_RUN_LOG _ASSERT_FAIL_LOG
+
+# Deliberately NOT exported. Subshells inherit ordinary shell variables, which
+# is all the counting needs. Exporting would also hand the paths to CHILD
+# PROCESSES, so a child suite that sources this file would delete the parent's
+# logs in its own finish -- erasing already-recorded failures and letting the
+# parent exit 0. That is the same false-pass class this design exists to close.
+trap 'rm -f "$_ASSERT_RUN_LOG" "$_ASSERT_FAIL_LOG"' EXIT
 
 pass() {
   printf 'x\n' >>"$_ASSERT_RUN_LOG"
@@ -101,18 +107,28 @@ fail() {
 }
 
 # bail <description> -- unrecoverable setup failure; stop the suite non-zero.
+# The EXIT trap cleans up the logs.
 bail() {
   printf '  FAIL %s\n' "$1"
   printf '\nsuite aborted\n'
-  rm -f "$_ASSERT_RUN_LOG" "$_ASSERT_FAIL_LOG"
   exit 1
 }
 
 # assert_contains <haystack> <needle> <description>
 assert_contains() {
   case "$1" in
-    *"$2"*) pass "$3" ;;
-    *) fail "$3" "expected to find: $2" ;;
+    *"$2"*)
+      pass "$3"
+      ;;
+    *)
+      # Name the likely cause: an empty haystack almost always means a
+      # broken extraction, not a genuinely missing needle.
+      if [ -z "$1" ]; then
+        fail "$3" "expected to find: $2 (haystack was empty; the extraction probably failed)"
+      else
+        fail "$3" "expected to find: $2"
+      fi
+      ;;
   esac
 }
 
@@ -148,24 +164,28 @@ assert_in() {
 # service_block <name> <yaml> -- print one top-level service's block.
 #
 # Works on both the rendered config and the raw compose.yml. The block ends
-# at the next key indented two spaces, whatever its first character:
-# matching /^  [a-z]/ instead would let the LAST service swallow the
-# networks and volumes sections as soon as any name began with a capital
-# or a digit.
+# at the next sibling key (two-space indent) or the next top-level key (zero
+# indent), whatever its first character. Two traps this avoids:
+#   - matching /^  [a-z]/ would let the LAST service swallow the networks
+#     and volumes sections as soon as any name began with a capital or digit
+#   - without the zero-indent rule the last service trails a bare
+#     "networks:" line, since that key is not indented at all
+# `index($0, svc) == 1` is a literal column-1 match, so service names
+# containing '-' need no escaping, and the trailing colon keeps
+# "luckperms-db" from matching the "luckperms-db-data" volume.
 service_block() {
   printf '%s\n' "$2" | awk -v svc="  $1:" '
     index($0, svc) == 1 { f = 1; next }
+    f && /^[^ ]/ { exit }
     f && /^  [^ ]/ { exit }
     f { print }
   '
 }
 
 finish() {
-  run=0
-  failed=0
+  local run=0 failed=0
   [ -s "$_ASSERT_RUN_LOG" ] && run=$(wc -l <"$_ASSERT_RUN_LOG" | tr -d ' ')
   [ -s "$_ASSERT_FAIL_LOG" ] && failed=$(wc -l <"$_ASSERT_FAIL_LOG" | tr -d ' ')
-  rm -f "$_ASSERT_RUN_LOG" "$_ASSERT_FAIL_LOG"
   printf '\n%d run, %d failed\n' "$run" "$failed"
   [ "$failed" -eq 0 ] || exit 1
   exit 0
