@@ -157,6 +157,23 @@ services:
       luckperms-standalone:
         condition: service_healthy
 
+  # Cloudflare tunnel. Token auth means the tunnel is REMOTELY managed: a local
+  # config.yml with ingress rules would be silently ignored. That is fine here
+  # because Caddy does all routing, so the dashboard needs exactly one public
+  # hostname: mc-admin.illiniredstone.org -> http://caddy:80
+  cloudflared:
+    # Pinned like caddy and webdav: this terminates the public entrypoint.
+    image: cloudflare/cloudflared:2026.9.1
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN must be set in .env}
+    networks:
+      - frontend-network
+    depends_on:
+      - caddy
+
   # Proxy for Minecraft servers
   velocity:
     build:

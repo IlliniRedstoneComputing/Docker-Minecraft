@@ -124,4 +124,11 @@ assert_not_contains "$WEBDAV" "minecraft-network" "webdav is not on the minecraf
 assert_contains "$WEBDAV" "read_only: true" "the config mount is read-only"
 assert_contains "$WEBDAV" "user: 1000:1000" "webdav does not run as root"
 
+CFD=$(service_block cloudflared "$CONFIG")
+# Assert the pinned image rather than the bare word "cloudflared", which
+# would also match the container name and prove nothing about the image.
+assert_contains "$CFD" "cloudflare/cloudflared:2026.9.1" "cloudflared uses a pinned image"
+assert_contains "$CFD" "TUNNEL_TOKEN" "cloudflared reads TUNNEL_TOKEN"
+assert_not_contains "$CFD" "ports:" "cloudflared declares no ports"
+
 finish
