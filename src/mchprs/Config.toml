@@ -25,8 +25,8 @@ host = "${LUCKPERMS_DATA_ADDRESS}"
 # # The name of the database the LuckPerms data is in.
 db_name = "${LUCKPERMS_DATA_DATABASE:-luckperms}"
 # # Credentials for the database.
-username = "${LUCKPERMS_DATA_USERNAME:-user_luckperms}"
-password = "${LUCKPERMS_DATA_PASSWORD:-password_luckperms}"
+username = "${LUCKPERMS_DATA_USERNAME:-luckperms_user}"
+password = "${LUCKPERMS_DATA_PASSWORD:-luckperms_password}"
 # # The name of the server, used for server specific permissions.
 # # See: https://luckperms.net/wiki/Context
 server_context = "mchprs"
