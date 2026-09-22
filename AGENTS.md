@@ -58,22 +58,41 @@ would make it try to resolve a host literally named `luckperms-db:3306`.
 ### 4. `lobby` and `onboarding` overwrite `world/` on every restart — intentionally
 
 Those worlds are **code artifacts**, not player state. Builders publish a new design by
-rebuilding the image, and players are in adventure mode and cannot modify blocks, so the
-world is intentionally defined in code rather than allowed to drift the way a normal
-Minecraft world does.
+rebuilding the image, so the world is intentionally defined in code rather than allowed
+to drift the way a normal Minecraft world does.
 
 Do not convert these to seed-if-absent. Contrast with `survival`, `project-0`,
 `project-1`, and `mchprs`, whose worlds are player-owned and must never be overwritten.
+
+**Only `lobby` matches that description today.** The two servers are not in the same
+state:
+
+- `lobby` ships a published build — 21 tracked files under `server/world` — and runs
+  `gamemode=adventure` with `force-gamemode=true`, so players cannot modify blocks and
+  the overwrite costs nothing.
+- `onboarding` ships an **empty** `server/world` holding only `.gitkeep`, and runs
+  `gamemode=survival`. Its live world is whatever the server generated in the volume,
+  that is the only copy, and the overwrite is a no-op today. Committing a world into
+  `src/onboarding/server/world` would begin overwriting player-modified chunks on every
+  restart. Settle the open question in item 5 first.
 
 ### 5. `backup` intentionally covers only `survival`, `project-0`, and `project-1`
 
 Those are the only volumes holding state that accrues over time.
 
-- `lobby` and `onboarding` worlds are restored from the image on every start, so backing
-  them up would only duplicate what git already holds.
+- `lobby`'s world is restored from the image on every start, so backing it up would only
+  duplicate what git already holds.
 - `velocity` and `mchprs` hold no durable state worth restoring.
 
 Do not extend backup coverage to the other services.
+
+**Open question — `onboarding`.** Its exclusion was recorded on the same grounds as
+`lobby`'s, but `onboarding` ships no world in its image (item 4), so nothing restores it.
+Its world exists only in the `managed-files` volume under the `onboarding` subpath: not
+in git, not in the backup set. That is fine if the world is meant to be disposable and
+is about to be published as a code artifact the way `lobby`'s is; it is a silent
+data-loss risk otherwise. Awaiting a maintainer decision — do not change the backup set
+to "fix" it in the meantime.
 
 ## Platform: CRLF files and the Git Bash toolchain
 

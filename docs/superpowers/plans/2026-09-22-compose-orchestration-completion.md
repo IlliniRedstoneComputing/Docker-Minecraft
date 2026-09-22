@@ -1863,7 +1863,11 @@ echo "Injecting secrets..."
 # only symptom is backends refusing connections.
 #
 # To rotate: change VELOCITY_SECRET, delete /data/config/FabricProxy-Lite.toml
-# on every backend, then recreate the containers.
+# on every backend, then RECREATE the containers. `docker compose restart` is
+# NOT enough. This renders the image's own copy in place, in the container's
+# writable layer, so after a first boot that copy holds an already-rendered
+# secret with no ${VELOCITY_SECRET} token left in it. A bare restart therefore
+# re-seeds the OLD secret from it, silently.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
 
 echo "Secrets injected successfully."
@@ -2109,7 +2113,11 @@ echo "Injecting secrets..."
 # only symptom is backends refusing connections.
 #
 # To rotate: change VELOCITY_SECRET, delete /data/config/FabricProxy-Lite.toml
-# on every backend, then recreate the containers.
+# on every backend, then RECREATE the containers. `docker compose restart` is
+# NOT enough. This renders the image's own copy in place, in the container's
+# writable layer, so after a first boot that copy holds an already-rendered
+# secret with no ${VELOCITY_SECRET} token left in it. A bare restart therefore
+# re-seeds the OLD secret from it, silently.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
 
 echo "Secrets injected successfully."
@@ -2130,18 +2138,31 @@ mkdir -p /data/mods
 rm -f /data/mods/*.jar
 cp -a /usr/src/init_data/mods/. /data/mods/
 
-# Image-controlled BY DESIGN. This server's world is a code artifact: builders
-# publish a new design by rebuilding the image, and players are in adventure
-# mode and cannot modify blocks. Do not convert this to seed-if-absent.
+# Image-controlled BY DESIGN, per AGENTS.md item 4: this world is a code
+# artifact, republished by rebuilding the image rather than allowed to drift.
+# Do not convert this to seed-if-absent.
+#
+# The two servers that share this file are NOT in the same state, and the
+# difference matters before anyone commits a world here:
+#   - lobby ships a published build (21 tracked files under server/world) and
+#     runs gamemode=adventure with force-gamemode=true, so players cannot
+#     modify blocks and overwriting costs nothing.
+#   - onboarding ships an EMPTY server/world holding only .gitkeep, and runs
+#     gamemode=survival. Its live world is whatever the server generated in the
+#     volume; that is the only copy, and the backup service does not cover it.
+#     Committing a world into src/onboarding/server/world would start
+#     overwriting player-modified chunks on every restart.
 #
 # This is a MERGE, not a replace: cp overwrites what the image ships and leaves
 # everything else alone, so a region file the image no longer carries survives
-# in the volume -- whether a builder deleted that part of the build or the
-# running server generated chunks past the published edge. Clearing /data/world
-# first would fix that and must NOT be done here: onboarding's image world is an
-# empty directory holding only .gitkeep, so the only copy of its world is the
-# one the server generated in the volume, and a delete-first sync would destroy
-# it on the next restart.
+# in the volume. Clearing /data/world first would fix that and must NOT be done
+# here -- on onboarding it would destroy the only copy of the world.
+#
+# mkdir -p runs as root, and it is the cp -a below that resets this directory's
+# owner to minecraft from the image copy. Dropping that cp -- it looks like a
+# no-op on onboarding, which copies only .gitkeep -- would leave /data/world
+# root-owned and unwritable by the server, because itzg's start script chowns
+# /data only when its owner differs from $UID.
 mkdir -p /data/world
 cp -a /usr/src/init_data/world/. /data/world/
 
@@ -2307,7 +2328,11 @@ echo "Injecting secrets..."
 # only symptom is backends refusing connections.
 #
 # To rotate: change VELOCITY_SECRET, delete /data/config/FabricProxy-Lite.toml
-# on every backend, then recreate the containers.
+# on every backend, then RECREATE the containers. `docker compose restart` is
+# NOT enough. This renders the image's own copy in place, in the container's
+# writable layer, so after a first boot that copy holds an already-rendered
+# secret with no ${VELOCITY_SECRET} token left in it. A bare restart therefore
+# re-seeds the OLD secret from it, silently.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
 
 echo "Secrets injected successfully."

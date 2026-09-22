@@ -21,9 +21,13 @@ Each has been verified against upstream source or confirmed with the maintainer.
 3. **`mchprs` takes a bare hostname — never add `:3306`.** It passes `host` to
    `OptsBuilder::ip_or_hostname()`, which defaults the port.
 4. **`lobby` and `onboarding` overwrite `world/` every restart on purpose.** Those worlds
-   are code artifacts published by rebuilding the image; players are in adventure mode.
+   are code artifacts published by rebuilding the image. Only `lobby` matches that today
+   — it runs adventure mode with its world committed, while `onboarding` ships an empty
+   world and runs survival. Read item 4 of [`AGENTS.md`](AGENTS.md) before committing a
+   world into `src/onboarding`.
 5. **`backup` covers only `survival`, `project-0`, and `project-1` on purpose.** Nothing
-   else accrues durable state.
+   else accrues durable state — with one open question about `onboarding`'s world, which
+   nothing currently restores or backs up. See item 5 of [`AGENTS.md`](AGENTS.md).
 
 ## Full guidance
 

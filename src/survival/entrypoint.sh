@@ -91,7 +91,11 @@ echo "Injecting secrets..."
 # only symptom is backends refusing connections.
 #
 # To rotate: change VELOCITY_SECRET, delete /data/config/FabricProxy-Lite.toml
-# on every backend, then recreate the containers.
+# on every backend, then RECREATE the containers. `docker compose restart` is
+# NOT enough. This renders the image's own copy in place, in the container's
+# writable layer, so after a first boot that copy holds an already-rendered
+# secret with no ${VELOCITY_SECRET} token left in it. A bare restart therefore
+# re-seeds the OLD secret from it, silently.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
 
 echo "Secrets injected successfully."

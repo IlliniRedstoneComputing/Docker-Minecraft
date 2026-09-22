@@ -89,10 +89,13 @@ These exist to prevent well-intentioned changes that would break things.
 `backup` archives **only `survival`, `project-0`, and `project-1`**. This is deliberate.
 
 - **`lobby` and `onboarding` are excluded** because their worlds are defined in code, not
-  accumulated through play. Players are in adventure mode and cannot modify blocks; the
-  lobby only changes when builders publish a new design, which happens by rebuilding the
-  image. The world is restored from the image on every start, so a backup would only
+  accumulated through play. Lobby players are in adventure mode and cannot modify blocks;
+  the lobby only changes when builders publish a new design, which happens by rebuilding
+  the image. Its world is restored from the image on every start, so a backup would only
   duplicate what git already holds.
+  **`onboarding` does not match that description yet** — it ships an empty world and runs
+  survival mode, so nothing restores its world and nothing backs it up. That gap is
+  recorded as an open question in item 5 of [`AGENTS.md`](AGENTS.md).
 - **`velocity` and `mchprs` are excluded** because neither holds durable state worth
   restoring.
 
