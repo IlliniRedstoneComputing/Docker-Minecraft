@@ -205,11 +205,22 @@ cd "$(dirname "$0")/.." || exit 1
 
 echo "compose configuration"
 
+# Fail loudly and once if the file under test is not here, rather than as a
+# scatter of confusing assertion failures.
+[ -r compose.yml ] || bail "compose.yml is not readable from $(pwd)"
+
 # Keep stderr out of the searched text. `docker compose config` writes
 # warnings about unset variables and obsolete attributes to stderr, and
 # merging them into CONFIG would let them satisfy the assertions below.
+#
+# `-f compose.yml` is REQUIRED, not decorative. Without it `docker compose`
+# walks UP the directory tree looking for a compose file. This plan executes
+# in a worktree nested inside the main checkout, so the walk finds the main
+# checkout's compose.yml and renders THAT -- every $CONFIG assertion then
+# passes or fails against the wrong repository. Verified: with compose.yml
+# renamed, the render resolved build contexts to the parent checkout's src/.
 STDERR=$(mktemp)
-if ! CONFIG=$(docker compose config 2>"$STDERR"); then
+if ! CONFIG=$(docker compose -f compose.yml config 2>"$STDERR"); then
   cat "$STDERR" >&2
   rm -f "$STDERR"
   bail "docker compose config did not render"
@@ -380,15 +391,23 @@ git commit -m "test: add compose validation harness and fix blocking compose err
 In `tests/test-compose-config.sh`, insert immediately before the `finish` line:
 
 ```bash
-# Dead volumes and services must be gone. BOTH are checked against the raw
-# file, not the rendered config:
+# Dead services and volumes must be gone. BOTH are checked against the raw
+# file, not the rendered config, and asserting either against $CONFIG would
+# be TAUTOLOGICAL:
 #   - the sftpgo block is commented out, and the renderer strips comments
 #   - `docker compose config` PRUNES any top-level volume no service mounts,
 #     so an unmounted wireguard-module-data never appears in the render
-#     whether or not it is declared -- asserting its absence there would be
-#     tautological
-assert_not_contains "$RAW" "sftpgo" "no sftpgo remnants in compose.yml"
-assert_not_contains "$RAW" "wireguard-module-data" "no wireguard volume"
+#     whether or not it is declared
+#
+# The haystack is lowercased because the residue is not all lowercase:
+# SFTPGO_AUTH_HOOK and friends are exactly the text someone would paste back
+# into an environment: block, and a case-sensitive match sails past them.
+# Both needles are kept broad for the same reason -- "wireguard" rather than
+# the one exact volume name, so a wireguard service or a differently-named
+# volume is caught too.
+RAW_LOWER=$(printf '%s' "$RAW" | tr 'A-Z' 'a-z')
+assert_not_contains "$RAW_LOWER" "sftpgo" "no sftpgo remnants in compose.yml"
+assert_not_contains "$RAW_LOWER" "wireguard" "no wireguard remnants in compose.yml"
 ```
 
 > **General rule for this plan's test suites:** never assert the *absence* of
@@ -424,6 +443,13 @@ Then delete the dead example file:
 
 ```bash
 git rm wg0.conf.example
+```
+
+And remove its now-orphaned ignore rule. In `.gitignore`, delete:
+
+```
+# Wireguard configuration
+wg0.conf
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
