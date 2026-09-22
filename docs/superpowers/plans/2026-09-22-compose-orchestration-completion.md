@@ -44,6 +44,7 @@
 | `src/velocity/server/plugins/luckperms/config.yml` | Stock values, no placeholders |
 | `src/survival/entrypoint.sh` | Seeding policy |
 | `src/{survival,lobby,onboarding,project-0,project-1}/server/config/luckperms/luckperms.conf` | Normalized |
+| `src/mchprs/Config.toml` | Fallback credentials aligned; keeps its `${...}` placeholders |
 | `src/{lobby,onboarding}/entrypoint.sh` | Robust secret injection, seeding policy, keep world re-sync |
 | `src/{project-0,project-1}/entrypoint.sh` | Robust secret injection, seeding policy |
 
@@ -1681,11 +1682,11 @@ RESP=$(api PUT /group/ctxprobe/nodes \
 CODE=$(printf '%s' "$RESP" | tail -n1)
 
 if [ "$CODE" = "200" ] || [ "$CODE" = "201" ] || [ "$CODE" = "204" ]; then
-  _pass "hyphenated context values are accepted (project-0 usable)"
+  pass "hyphenated context values are accepted (project-0 usable)"
   echo "       -> permissions.yml MAY use per-server contexts for project servers"
 else
-  _fail "hyphenated context values rejected with HTTP $CODE" \
-        "permissions.yml MUST NOT use server=project-0 contexts; see the fallback in the spec"
+  fail "hyphenated context values rejected with HTTP $CODE" \
+       "permissions.yml MUST NOT use server=project-0 contexts; see the fallback in the spec"
 fi
 
 api DELETE /group/ctxprobe >/dev/null
