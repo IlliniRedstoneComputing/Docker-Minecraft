@@ -715,10 +715,15 @@ Replace the entire contents of `src/caddy/Caddyfile` with:
 	# handle, NOT handle_path: the /files prefix must reach the WebDAV server,
 	# which strips it itself and adds it back to PROPFIND responses.
 	#
-	# Two matchers, not the glob /files*, so matching is segment-bounded.
-	# /files* also matches /filesystem, which would be proxied to webdav
-	# instead of falling through to the catch-all redirect.
-	handle /files /files/* {
+	# A named matcher with two path patterns, not the glob /files*, so
+	# matching is segment-bounded. /files* also matches /filesystem, which
+	# would be proxied to webdav instead of falling through to the catch-all
+	# redirect. `handle /files /files/* { ... }` (two bare path args) is not
+	# valid Caddyfile syntax -- handle takes exactly one matcher token, and
+	# caddy refuses to start with "wrong argument count ... after '/files/*'"
+	# -- so the two patterns are given to a `path` matcher instead.
+	@filesPath path /files /files/*
+	handle @filesPath {
 		reverse_proxy webdav:6065 {
 			header_up X-Real-IP {remote_host}
 			header_up REMOTE-HOST {remote_host}
@@ -737,10 +742,22 @@ Replace the entire contents of `src/caddy/Caddyfile` with:
 		}
 	}
 
-	# handle_path, NOT handle: the LuckPerms REST API has no base-path setting
-	# and serves /user, /group and /track at the root, so the prefix is stripped.
-	# Segment-bounded for the same reason as /files above.
-	handle_path /luckperms /luckperms/* {
+	# The LuckPerms REST API has no base-path setting and serves /user,
+	# /group and /track at the root, so the /luckperms prefix must be
+	# stripped before proxying -- same reasoning as the original handle_path.
+	#
+	# Segment-bounded for the same reason as /files above, via a named `path`
+	# matcher with two patterns. handle_path itself cannot be used here:
+	# `handle_path /luckperms /luckperms/* { ... }` is not valid Caddyfile
+	# syntax for the same reason as the files block, and handle_path also
+	# refuses a named matcher argument ("path matcher must begin with '/'"),
+	# because it needs a literal path token to derive the prefix to strip.
+	# So `handle` matches the named matcher and `uri strip_prefix` does what
+	# handle_path did implicitly. Verified equivalent: /luckperms/health ->
+	# upstream sees /health; bare /luckperms -> upstream sees "".
+	@luckpermsPath path /luckperms /luckperms/*
+	handle @luckpermsPath {
+		uri strip_prefix /luckperms
 		reverse_proxy luckperms-standalone:8080
 	}
 
@@ -821,7 +838,15 @@ dav_cleanup() {
     dav -o /dev/null -X DELETE "$p" >/dev/null 2>&1 || true
   done
 }
-trap dav_cleanup EXIT
+# tests/lib.sh installs its own EXIT trap to remove its temp result logs.
+# A plain `trap dav_cleanup EXIT` here would replace that handler outright
+# instead of adding to it -- verified empirically: with only the plain form,
+# lib.sh's two temp files were left behind after every run. Capture the
+# existing handler and chain it after this script's own cleanup instead.
+_prior_exit_trap=$(trap -p EXIT)
+_prior_exit_trap=${_prior_exit_trap#trap -- \'}
+_prior_exit_trap=${_prior_exit_trap%\' EXIT}
+trap "dav_cleanup; ${_prior_exit_trap}" EXIT
 dav_cleanup
 
 echo "webdav through caddy"
