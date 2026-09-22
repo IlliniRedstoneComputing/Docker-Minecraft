@@ -43,6 +43,7 @@
 | `src/velocity/entrypoint.sh` | Seeding policy |
 | `src/velocity/server/plugins/luckperms/config.yml` | Stock values, no placeholders |
 | `src/survival/entrypoint.sh` | Seeding policy |
+| `src/survival/Dockerfile` | Drop the unrendered /config copy that would clobber the rendered secret |
 | `src/{survival,lobby,onboarding,project-0,project-1}/server/config/luckperms/luckperms.conf` | Normalized |
 | `src/mchprs/Config.toml` | Fallback credentials aligned; keeps its `${...}` placeholders |
 | `src/{lobby,onboarding}/entrypoint.sh` | Robust secret injection, seeding policy, keep world re-sync |
@@ -1451,9 +1452,87 @@ git commit -m "fix: connect velocity luckperms to shared storage and seed config
 ## Task 8: Survival entrypoint seeding policy
 
 **Files:**
+- Modify: `src/survival/Dockerfile`
 - Modify: `src/survival/entrypoint.sh`
 
-- [ ] **Step 1: Apply the seeding policy**
+- [ ] **Step 1: Remove the unrendered config copy from the Dockerfile**
+
+`src/survival/Dockerfile` stages a **second, unrendered** copy of
+`FabricProxy-Lite.toml` into `/config/`:
+
+```dockerfile
+FROM alpine:latest AS builder
+
+COPY --chmod=644 ./server/config/FabricProxy-Lite.toml /FabricProxy-Lite.toml
+...
+COPY --from=builder --chmod=644 ./FabricProxy-Lite.toml /config/FabricProxy-Lite.toml
+```
+
+The itzg image treats `/config` as a directory to sync into `/data/config` on every
+start — its log says so explicitly: `[init] Copying any configs from /config to
+/data/config`. That copy holds the literal `secret = "${VELOCITY_SECRET}"`, so if it
+lands it overwrites the file the entrypoint just rendered and **every backend server
+fails Velocity forwarding authentication**.
+
+Today it does not land, because the copy fails:
+
+```
+WARN : Failed to visit file /config/FabricProxy-Lite.toml due to AccessDeniedException
+```
+
+**The forwarding secret is therefore working by accident.** The failure appears to be a
+Docker Desktop on Windows quirk — the container runs as uid 0 and still cannot read a
+644 root-owned file — and on the Linux deployment host that copy would most likely
+succeed, breaking proxy auth with an opaque error. `survival` is also the only one of
+the five Fabric servers that does this; `lobby`, `onboarding`, `project-0` and
+`project-1` have no `/config` copy at all, which is a further sign it was unintentional.
+
+Delete the `builder` stage and the `COPY --from=builder` line. The stage exists solely
+to stage that one file. The result should read:
+
+```dockerfile
+FROM itzg/minecraft-server:latest
+
+ENV TYPE=FABRIC
+ENV EULA=TRUE
+ENV ONLINE_MODE=FALSE
+ENV VERSION=1.21.8
+
+# Copy server files (they will take on default permissions)
+WORKDIR /usr/src/init_data
+COPY ./server .
+RUN chown -R minecraft:minecraft . && \ 
+    find . -type d -exec chmod 755 {} + && \
+    find . -type f -exec chmod 644 {} +
+
+WORKDIR /
+
+# Copy the entrypoint script and make it executable
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 25565
+
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+This matches the other four servers' Dockerfiles. The entrypoint already renders
+`FabricProxy-Lite.toml` and seeds it into `/data/config`, which is the only copy the
+server needs.
+
+Verify afterwards that the warning is gone and the secret still renders:
+
+```bash
+docker compose -f compose.yml up -d --build volume_init luckperms-db survival
+sleep 90
+docker compose -f compose.yml logs survival | grep -ci 'accessdenied'
+docker compose -f compose.yml exec -T survival grep '^secret' /data/config/FabricProxy-Lite.toml
+```
+
+Expected: `0` AccessDenied warnings, and `secret = "velocity_secret"` — matching
+`VELOCITY_SECRET` in `.env`, not the literal `${VELOCITY_SECRET}`.
+
+- [ ] **Step 2: Apply the seeding policy**
 
 In `src/survival/entrypoint.sh`, replace everything from the line `echo "Injecting secrets..."` to the end of the file with:
 
@@ -1488,7 +1567,7 @@ echo "Initialization complete. Starting server..."
 exec "/image/scripts/start"
 ```
 
-- [ ] **Step 2: Verify config edits now survive a restart**
+- [ ] **Step 3: Verify config edits now survive a restart**
 
 ```bash
 docker compose up -d --build survival
@@ -1501,7 +1580,7 @@ docker compose exec survival grep -c '# edited' /data/config/FabricProxy-Lite.to
 
 Expected: `1`. Before this change the edit would have been reverted to `0`.
 
-- [ ] **Step 3: Verify mods are still re-synced**
+- [ ] **Step 4: Verify mods are still re-synced**
 
 ```bash
 docker compose exec survival sh -c 'rm -f /data/mods/spark-1.10.142-fabric.jar'
@@ -1512,7 +1591,7 @@ docker compose exec survival sh -c 'ls /data/mods/spark-1.10.142-fabric.jar'
 
 Expected: the path is listed — the image restored it.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/survival/entrypoint.sh
@@ -1521,7 +1600,7 @@ git commit -m "fix: seed survival config without clobbering admin edits"
 
 ---
 
-## Task 9: Lobby and onboarding entrypoints
+: Lobby and onboarding entrypoints
 
 **Files:**
 - Modify: `src/lobby/entrypoint.sh`
