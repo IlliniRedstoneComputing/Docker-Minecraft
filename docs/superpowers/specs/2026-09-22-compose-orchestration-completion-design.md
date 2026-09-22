@@ -221,7 +221,17 @@ Hybrid policy:
 | `mods/` | re-sync every start | mod upgrades must actually land |
 | `config/` | seed if absent | admin-editable over WebDAV |
 | `server.properties` | seed if absent | admin-editable over WebDAV |
-| `world/` | first boot only | never clobber a live world |
+| `world/` | **depends on server role — see below** | |
+
+The `world/` policy is per-role, not global:
+
+| Server | `world/` policy | Reason |
+| --- | --- | --- |
+| `lobby`, `onboarding` | re-sync every start | The world is a **code artifact**. Builders publish a new design by rebuilding the image; players are in adventure mode and cannot modify blocks. The image is authoritative by intent. |
+| `survival`, `project-0`, `project-1`, `mchprs` | never touched after first boot | Player-owned state. |
+
+This is why `lobby` and `onboarding` ship a `world/` directory in git and copy it
+unconditionally: that is correct behavior, not the data-loss bug it resembles.
 
 Velocity specifically:
 
@@ -252,7 +262,8 @@ Endpoint mapping:
 | list existing groups | `GET /group` |
 | create a group | `POST /group` (tolerate already-exists) |
 | set a group's full node set | `PUT /group/{name}/nodes` |
-| define the track | `PUT /track/{name}` |
+| create the track | `POST /track` (tolerate already-exists) |
+| define the track's groups | `PATCH /track/{trackName}` |
 | push to live servers | `POST /messaging/update` |
 
 Authentication is `Authorization: Bearer <LUCKPERMS_SECRET>`.
@@ -326,7 +337,15 @@ Verifications:
    the `/files` prefix and the `Destination` rewrite both work.
 8. A WebDAV write into a directory **created by a Minecraft server** succeeds — the
    original uid trap.
-9. MCHPRS resolves a seeded permission, including the prefix edge case from finding 30.
+9. MCHPRS resolves a seeded permission, including the prefix edge case from
+   [Appendix A](#appendix-a--audit-findings) item 22.
+10. **Context values containing hyphens are accepted.** The REST API's OpenAPI schema
+    declares context keys and values as `^[a-z0-9]+$`, which would reject `project-0` and
+    `project-1`, though LuckPerms itself permits hyphens. The schema is also inconsistent
+    about whether `context` is an array of pairs or an object. Both must be confirmed
+    against a running instance before `permissions.yml` relies on per-server contexts for
+    the project servers. If the pattern is enforced, the fallback is to use `global`
+    context with permission keys that encode the server instead.
 
 The cloudflared hop is **not** verified end-to-end. Caddy is tested by temporarily
 publishing a local port, which is removed afterward. cloudflared ships configured but
@@ -339,8 +358,12 @@ Explicitly deferred, by decision:
 - **Rotating the committed secret** `management-server-secret=Pw4mZIYJ...` in
   `src/survival/server/server.properties`. It remains in git history regardless; full
   removal needs a history rewrite across repositories.
-- **Extending backup coverage.** `backup` archives only `survival`, `project-0`, and
-  `project-1` — not `lobby`, `onboarding`, `mchprs`, or `velocity`.
+- **Extending backup coverage.** This is **intentional and correct**, not an oversight.
+  `backup` archives only `survival`, `project-0`, and `project-1` because those are the
+  only volumes holding state that accrues over time. `lobby` and `onboarding` worlds are
+  defined in code and restored from the image on every start, so a backup would only
+  duplicate what git already holds. `velocity` and `mchprs` hold no durable state worth
+  restoring. Do not "fix" this.
 - **Cloudflare Access** in front of the admin hostname. Protection is the WebDAV
   password and the LuckPerms bearer token; both must be strong.
 - **A dedicated Minecraft proxy** for `mc.illiniredstone.org`; `25565` stays published.
@@ -404,7 +427,8 @@ Confirmed problems the implementation must address.
     commented `sftpgo` block are dead.
 26. `velocity` lacks a `restart:` policy.
 27. `.env.example` names the wrong target file and carries dead variables.
-28. `lobby` and `onboarding` overwrite the live world on every restart.
+28. *(Retracted — see [Appendix B](#appendix-b--retracted-findings). `lobby` and
+    `onboarding` overwriting the world on every restart is intentional.)*
 
 ## Appendix B — retracted findings
 
@@ -415,6 +439,8 @@ Initially reported, then disproved against upstream sources. **Do not "fix" thes
 | The `luckperms-standalone` healthcheck targets the wrong port/path | Port 3001 is the standalone heartbeat server, started when the app runs with `--docker`, independent of the REST API's 8080. `HeartbeatHttpServer` registers `createContext("/health", ...)`, and Java's `HttpServer` matches contexts by path prefix, so `/healthz` resolves to it. `wget` is present. The check works. The only note: the base image already declares a stricter check (`grep -c '"up":true'`), so the compose override is redundant and may simply be deleted. |
 | `velocity` has no healthcheck, so `service_healthy` dependencies fail | `itzg/mc-proxy` declares `HEALTHCHECK --start-period=10s CMD /usr/bin/health.sh`. `HEALTHCHECK` is inherited unless explicitly overridden, and `src/velocity/Dockerfile` overrides only `CMD`. `health.sh` reads `.bind` from `velocity.toml` in WORKDIR `/server` — where the entrypoint places it — resolving port 25565. |
 | mchprs is missing `:3306` on `LUCKPERMS_DATA_ADDRESS` | MCHPRS passes `host` to `OptsBuilder::ip_or_hostname()`, which takes a hostname only and defaults the port. The bare `luckperms-db` is correct; adding `:3306` would break it. |
+| `lobby` and `onboarding` clobber the live world on every restart | Intentional. Those worlds are code artifacts: builders publish a new design by rebuilding the image, and players are in adventure mode and cannot modify blocks. The image is authoritative by design. This is also why neither is backed up. |
+| `backup` is missing `lobby`, `onboarding`, `mchprs`, and `velocity` | Intentional. Only `survival`, `project-0`, and `project-1` accrue state over time. The lobby and onboarding worlds live in git; `velocity` and `mchprs` hold no durable state. |
 
 ## References
 
