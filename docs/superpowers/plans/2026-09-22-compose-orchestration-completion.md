@@ -1167,7 +1167,11 @@ confs=(src/*/server/config/luckperms/luckperms.conf)
 if [ "${#confs[@]}" -ne 5 ]; then
   printf 'expected 5 luckperms.conf files, found %d:\n' "${#confs[@]}" >&2
   printf '  %s\n' "${confs[@]}" >&2
-  printf 'run: git submodule update --init --recursive\n' >&2
+  if [ "${#confs[@]}" -lt 5 ]; then
+    printf 'run: git submodule update --init --recursive\n' >&2
+  else
+    printf 'a server was added -- update the expected count in this script\n' >&2
+  fi
   exit 1
 fi
 
@@ -1226,6 +1230,17 @@ for conf in "${confs[@]}"; do
   fi
   if grep -qF '${LUCKPERMS' "$conf"; then
     printf 'placeholders remain in %s\n' "$conf" >&2
+    exit 1
+  fi
+  # messaging-service needs its own check. Every other rewritten setting either
+  # carried a ${LUCKPERMS...} placeholder, caught by the test above, or is the
+  # redis `enabled` line, caught by the END assertion. This one went from
+  # "redis" to "sql" with no placeholder either side, so a reformat that made
+  # the pattern miss would leave the file still selecting the Redis messenger
+  # while the redis block is disabled -- and nothing would say so. Asserting
+  # the post-state rather than the substitution keeps it idempotent.
+  if ! grep -q '^messaging-service = "sql"' "$conf"; then
+    printf 'messaging-service not normalized in %s\n' "$conf" >&2
     exit 1
   fi
 done

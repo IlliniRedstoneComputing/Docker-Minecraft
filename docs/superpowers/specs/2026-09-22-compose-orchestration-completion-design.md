@@ -71,6 +71,13 @@ These land first; nothing else is testable until they do.
    `${LUCKPERMS_DB_USER:-luckperms_user}` while every client connects as
    `${LUCKPERMS_DB_USER:-user_luckperms}`. Authentication fails whenever `.env` is
    absent. Use one default everywhere.
+
+   The password has the same split and must be fixed with it: the database creates the
+   user with `${LUCKPERMS_DB_PASSWORD:-luckperms_password}` while all seven clients
+   authenticate with `${LUCKPERMS_DB_PASSWORD:-password_luckperms}`. Fixing only the
+   username leaves every client still unable to connect, so both halves are one finding.
+   Aligning the fallback in `src/mchprs/Config.toml` does not help on its own, because
+   `compose.yml` always sets the variable and that fallback is unreachable.
 4. **`webdav` mounts the literal placeholder** `/path/to/your/files`. Resolved by the
    rewrite below.
 5. **`velocity` has no `restart:` policy** — the only service missing one. Add
