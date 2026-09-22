@@ -178,8 +178,6 @@ services:
   velocity:
     build:
       context: ./src/velocity
-      args:
-        - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
     container_name: velocity
     restart: unless-stopped
     ports:
