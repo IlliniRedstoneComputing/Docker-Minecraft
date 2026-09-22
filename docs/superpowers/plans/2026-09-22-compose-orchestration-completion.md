@@ -718,7 +718,9 @@ In `compose.yml`, add this service immediately after the `webdav` service:
 ```yaml
   # Internal path router between the tunnel and the admin services.
   caddy:
-    image: caddy:2-alpine
+    # Pinned for the same reason webdav is: this sits directly in the
+    # request path from the internet.
+    image: caddy:2.11.4-alpine
     container_name: caddy
     restart: unless-stopped
     volumes:
@@ -794,13 +796,22 @@ assert_in "$CODE" "201 204" "MOVE with an absolute Destination succeeds"
 CODE=$(dav -o /dev/null -w '%{http_code}' -X DELETE "$BASE/files/survival/webdav-test.txt")
 assert_in "$CODE" "200 204" "DELETE removes the file"
 
-# The uid trap: writing into a directory the Minecraft server created as a
-# different user. This is why the FROM scratch image, which runs as uid 0,
-# matters -- the previous nginx image ran as uid 100 and would fail here.
-CODE=$(dav -o /dev/null -w '%{http_code}' -X PUT --data 'x' \
-  "$BASE/files/survival/config/webdav-uid-test.txt")
-assert_in "$CODE" "201 204" "write into a server-created directory succeeds"
-dav -o /dev/null -X DELETE "$BASE/files/survival/config/webdav-uid-test.txt"
+# Directory creation and nested writes -- what the administration service
+# will actually do. Self-contained: no Minecraft server has run at this
+# point, so /files/survival/ is empty and nothing deeper exists yet. WebDAV
+# PUT does not create parent collections, so the MKCOL is required, not
+# decorative. (The harder case -- writing into a directory a Minecraft
+# server created as uid 1000 -- needs a server to have run, so it lives in
+# the full-stack task.)
+CODE=$(dav -o /dev/null -w '%{http_code}' -X MKCOL "$BASE/files/survival/davtest/")
+assert_in "$CODE" "201" "MKCOL creates a collection"
+
+CODE=$(dav -o /dev/null -w '%{http_code}' -X PUT --data 'nested' \
+  "$BASE/files/survival/davtest/nested.txt")
+assert_in "$CODE" "201 204" "PUT into a newly created collection succeeds"
+
+dav -o /dev/null -X DELETE "$BASE/files/survival/davtest/nested.txt"
+dav -o /dev/null -X DELETE "$BASE/files/survival/davtest/"
 
 finish
 ```
@@ -2393,7 +2404,38 @@ bash tests/run-all.sh
 
 Expected: `ALL SUITES PASSED`.
 
-- [ ] **Step 4: Verify MCHPRS reads the seeded model**
+- [ ] **Step 4: Verify the uid trap is actually closed**
+
+This is the check that could not run earlier: it needs a Minecraft server to have
+actually started and created directories as uid 1000. Writing into one of those over
+WebDAV is the original failure mode that motivated replacing the nginx image.
+
+```bash
+WU=$(grep -E '^WEBDAV_USERNAME=' .env | cut -d= -f2-)
+WP=$(grep -E '^WEBDAV_PASSWORD=' .env | cut -d= -f2-)
+
+# The survival server creates /data/config as uid 1000 on first boot.
+docker compose exec -T survival sh -c 'ls -ldn /data/config'
+
+docker run --rm --network irc-frontend-network curlimages/curl:latest \
+  -s -o /dev/null -w 'PUT=%{http_code}\n' -u "$WU:$WP" \
+  -X PUT --data 'x' http://caddy:80/files/survival/config/uidtest.txt
+```
+
+Expected: the directory is owned by `1000 1000`, and `PUT=201`.
+
+Then confirm the reverse direction — that a Minecraft server can rewrite a file WebDAV
+created, which is what running webdav as uid 1000 rather than root buys:
+
+```bash
+docker compose exec -T survival sh -c 'echo rewritten > /data/config/uidtest.txt && cat /data/config/uidtest.txt'
+docker compose exec -T survival sh -c 'rm -f /data/config/uidtest.txt'
+```
+
+Expected: `rewritten`, with no permission error. A failure here means the ownership
+alignment regressed.
+
+- [ ] **Step 5: Verify MCHPRS reads the seeded model**
 
 ```bash
 docker compose logs mchprs | grep -iE "permission|luckperms|error" | head -n 20
@@ -2413,7 +2455,7 @@ docker compose exec -T luckperms-db mariadb -u"$DB_USER" -p"$DB_PASS" -N -B \
 
 Expected: rows for `onboarder`, `member`, and `admin`, with `mchprs.command.*` carrying server `mchprs`, and no permission that is a strict prefix of another.
 
-- [ ] **Step 5: Verify the only published port**
+- [ ] **Step 6: Verify the only published port**
 
 ```bash
 docker compose ps --format '{{.Service}} {{.Ports}}' | grep -E '0\.0\.0\.0|:::'
@@ -2421,13 +2463,13 @@ docker compose ps --format '{{.Service}} {{.Ports}}' | grep -E '0\.0\.0\.0|:::'
 
 Expected: exactly one line, for `velocity`, showing `25565`.
 
-- [ ] **Step 6: Restore the production heap setting**
+- [ ] **Step 7: Restore the production heap setting**
 
 ```bash
 sed -i 's|^JAVA_OPTS=.*|JAVA_OPTS=-Xmx2G -Xms1G|' .env
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add tests/run-all.sh
@@ -2436,7 +2478,7 @@ git commit -m "test: add a runner for the full suite"
 
 ---
 
-## Task 18: Reconcile the documentation
+: Reconcile the documentation
 
 **Files:**
 - Modify: `docs/api.md`
