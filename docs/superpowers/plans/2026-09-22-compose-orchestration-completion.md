@@ -569,8 +569,12 @@ There is intentionally no `healthcheck`: the image is built `FROM scratch` and c
 
 ```bash
 [ -f .env ] || cp .env.example .env
-printf 'WEBDAV_USERNAME=testuser\nWEBDAV_PASSWORD=testpassword123\n' >> .env
+grep -q '^WEBDAV_USERNAME=' .env || printf 'WEBDAV_USERNAME=testuser\n' >> .env
+grep -q '^WEBDAV_PASSWORD=' .env || printf 'WEBDAV_PASSWORD=testpassword123\n' >> .env
 ```
+
+Guarded rather than a bare append, so re-running the step does not accumulate
+duplicate entries. `.env` is gitignored and must never be committed.
 
 - [ ] **Step 6: Run the test to verify it passes**
 
