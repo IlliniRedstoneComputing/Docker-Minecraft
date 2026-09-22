@@ -69,6 +69,20 @@ services:
   luckperms-standalone:
     build:
       context: ./src/luckperms-standalone
+    healthcheck:
+      # The base image's inherited check greps for '"up":true', but this version
+      # reports {"healthy":true,...}. The inherited check can NEVER pass, so this
+      # must be overridden rather than removed. Matching the body rather than just
+      # the status code also proves storage connectivity, not merely liveness.
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O - http://localhost:3001/health | grep -q '\"healthy\":true'",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     container_name: luckperms-standalone
     restart: unless-stopped
     environment:

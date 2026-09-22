@@ -71,9 +71,13 @@ assert_eq "$DBUSER_OK" "$DBUSER_ALL" "every LUCKPERMS_DB_USER default agrees"
 VELOCITY=$(service_block velocity "$CONFIG")
 assert_contains "$VELOCITY" "restart: unless-stopped" "velocity has a restart policy"
 
-# The base image healthcheck must not be shadowed by a weaker override.
+# The healthcheck override must be PRESENT and must match the real response
+# schema. The base image's inherited check greps '"up":true' while the endpoint
+# reports {"healthy":true,...}, so inheriting it leaves the container forever
+# unhealthy and luckperms-init never starts.
 LPSA=$(service_block luckperms-standalone "$CONFIG")
-assert_not_contains "$LPSA" "healthcheck" "no redundant luckperms healthcheck override"
+assert_contains "$LPSA" "healthy" "luckperms healthcheck matches the real schema"
+assert_not_contains "$LPSA" '"up":true' "luckperms healthcheck does not use the broken needle"
 
 # Dead services and volumes must be gone. BOTH are checked against the raw
 # file, not the rendered config, and asserting either against $CONFIG would

@@ -24,10 +24,12 @@ echo "webdav through caddy"
 CODE=$(dav -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$BASE/files/")
 assert_eq "$CODE" "207" "PROPFIND /files/ returns multi-status"
 
-# A request missing the /files prefix must be refused, proving the prefix is
-# reaching the server rather than being stripped by Caddy.
+# A path outside both admin routes falls through to the catch-all redirect.
+# (The 207 above is what proves the /files prefix actually reaches webdav: if
+# Caddy stripped it, webdav would see "/" and answer 400. A path like
+# /survival/ never reaches webdav at all, so it cannot test that.)
 CODE=$(dav -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$BASE/survival/")
-assert_in "$CODE" "400 404 502" "a request without the /files prefix is refused"
+assert_in "$CODE" "301 302 307 308" "an unrouted path hits the catch-all redirect"
 
 # Unauthenticated access must be rejected.
 CODE=$(docker run --rm --network irc-frontend-network curlimages/curl:latest \
@@ -46,13 +48,18 @@ CODE=$(dav -o /dev/null -w '%{http_code}' -X MOVE \
   "$BASE/files/survival/webdav-test.txt")
 assert_in "$CODE" "201 204" "MOVE with a path-only Destination succeeds"
 
-# The same MOVE with an absolute Destination must also work, because Caddy
-# rewrites it. This is the regression guard for the @hasDest rule -- without
-# it, this returns 502 or 400.
+# The same MOVE with an absolute Destination whose host does NOT match the
+# request Host. This is the real regression guard for the @hasDest rule.
+#
+# A matching host would prove nothing: golang.org/x/net/webdav, which this
+# server is built on, already accepts an absolute Destination whenever its
+# host equals the request's Host, so "http://caddy/..." succeeds with or
+# without the rewrite. Only a foreign host exercises it -- verified: 502
+# without the rewrite, 201 with it.
 CODE=$(dav -o /dev/null -w '%{http_code}' -X MOVE \
-  -H "Destination: http://caddy/files/survival/webdav-test.txt" \
+  -H "Destination: http://other-host.example:9999/files/survival/webdav-test.txt" \
   "$BASE/files/survival/webdav-moved.txt")
-assert_in "$CODE" "201 204" "MOVE with an absolute Destination succeeds"
+assert_in "$CODE" "201 204" "MOVE with a foreign-host absolute Destination succeeds"
 
 CODE=$(dav -o /dev/null -w '%{http_code}' -X DELETE "$BASE/files/survival/webdav-test.txt")
 assert_in "$CODE" "200 204" "DELETE removes the file"

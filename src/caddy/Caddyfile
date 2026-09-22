@@ -2,9 +2,15 @@
 # TLS is terminated by Cloudflare, so this listens on plain HTTP.
 :80 {
 	# WebDAV COPY and MOVE send an absolute URL in Destination. Rewrite it to a
-	# path-only form or every COPY and MOVE fails.
+	# path-only form, or any client whose Destination host does not match the
+	# request Host gets a 502 from the WebDAV server.
+	#
+	# `request_header`, NOT `header`. In Caddy, `header` manipulates the
+	# RESPONSE; only `request_header` rewrites what reaches the upstream.
+	# Verified: with `header`, a foreign-host Destination still returned 502
+	# because the rewrite never applied to the proxied request.
 	@hasDest header_regexp dest Destination ^https?://[^/]+(.*)$
-	header @hasDest Destination {re.dest.1}
+	request_header @hasDest Destination {re.dest.1}
 
 	# handle, NOT handle_path: the /files prefix must reach the WebDAV server,
 	# which strips it itself and adds it back to PROPFIND responses.
