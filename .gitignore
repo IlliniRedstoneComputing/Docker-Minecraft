@@ -2,9 +2,6 @@
 backup.config
 backup.credentials.json
 
-# Wireguard configuration
-wg0.conf
-
 # Docker volumes and data
 volumes/
 data/
