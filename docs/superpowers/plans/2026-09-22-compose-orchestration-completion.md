@@ -81,6 +81,13 @@ Create `tests/lib.sh`:
 # counters are lost with the subshell, which lets a suite print FAIL and
 # still exit 0 -- a test that passes when it should fail is worse than no
 # test at all.
+#
+# ASSERTION OUTPUT MUST NEVER ECHO A HAYSTACK. The rendered compose config
+# contains live secrets (WEBDAV_PASSWORD, the LuckPerms credentials, the
+# tunnel token), and these suites run in CI-visible output. Every helper here
+# prints only the needle and the description on failure. Note that assert_eq
+# prints BOTH of its arguments, so never pass a service block or a rendered
+# config to it.
 set -uo pipefail
 
 : "${_ASSERT_RUN_LOG:=$(mktemp)}"
@@ -238,9 +245,17 @@ RAW=$(cat compose.yml)
 BACKUP=$(service_block backup "$RAW")
 assert_contains "$BACKUP" "required: false" "backup.config is optional"
 
-# Exactly one published port in the whole stack.
+# Exactly one published port in the whole stack. This is the invariant the
+# entire tunnel architecture rests on, so it is guarded two ways.
+#
+# Counting `published:` alone is NOT sufficient: the short form
+# `ports: - "6065"` publishes an ephemeral host port but renders only
+# `mode/target/protocol`, with no `published:` key at all. Verified. So the
+# number of services declaring a `ports:` block is counted as well.
 PUBLISHED=$(printf '%s\n' "$CONFIG" | grep -cE '^[[:space:]]+published:' || true)
 assert_eq "$PUBLISHED" "1" "exactly one published port"
+PORTBLOCKS=$(printf '%s\n' "$CONFIG" | grep -cE '^[[:space:]]+ports:' || true)
+assert_eq "$PORTBLOCKS" "1" "exactly one service declares ports at all"
 assert_contains "$CONFIG" "target: 25565" "the published port targets 25565"
 
 # Credential defaults must agree between the database and its clients. Checked
@@ -411,12 +426,21 @@ assert_not_contains "$RAW_LOWER" "sftpgo" "no sftpgo remnants in compose.yml"
 assert_not_contains "$RAW_LOWER" "wireguard" "no wireguard remnants in compose.yml"
 ```
 
-> **General rule for this plan's test suites:** never assert the *absence* of
-> something in `$CONFIG` unless you have confirmed that thing would actually
-> appear in the render when present. Comments, unused volumes, and
-> `${VAR:-default}` fallbacks are all erased by rendering, so an absence
-> assertion against `$CONFIG` silently passes for any of them. Assert absence
-> against `$RAW` instead.
+> **General rule for this plan's test suites.** Absence assertions against the
+> *rendered* config fail in two distinct ways, and both have bitten already:
+>
+> 1. **The thing is erased by rendering.** Comments, unused volumes, and
+>    `${VAR:-default}` fallbacks never appear in `$CONFIG` whether or not they
+>    are declared, so asserting their absence there is tautological. Assert
+>    against `$RAW` instead.
+> 2. **The thing has more than one rendered form.** `ports: - "6065"` publishes
+>    a host port but renders no `published:` key, so a `published` needle
+>    passes on a service that is genuinely exposed. Assert on the parent key
+>    (`ports:`) rather than on one of its children.
+>
+> Before writing any absence assertion, confirm by experiment that the thing
+> you are forbidding would actually appear, in every form it can take, when
+> present.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -487,7 +511,23 @@ assert_contains "$WEBDAV" "hacdias/webdav" "webdav uses the hacdias image"
 assert_contains "$WEBDAV" "frontend-network" "webdav is on frontend-network"
 assert_contains "$WEBDAV" "target: /data" "managed-files is mounted at /data"
 assert_not_contains "$WEBDAV" "/path/to/your/files" "no placeholder mount"
-assert_not_contains "$WEBDAV" "published" "webdav publishes no port"
+
+# Assert on the `ports:` KEY, not on `published:`. The short form
+# `ports: - "6065"` publishes an ephemeral host port while rendering no
+# `published:` key, so a `published` needle would pass on a service that is
+# in fact reachable from the host.
+assert_not_contains "$WEBDAV" "ports:" "webdav declares no ports at all"
+
+# Network isolation is the containment boundary for an internet-reachable
+# service holding full write access to every world. Presence of
+# frontend-network above does not preclude ALSO being on minecraft-network.
+assert_not_contains "$WEBDAV" "minecraft-network" "webdav is not on the minecraft network"
+
+# The config mount must stay read-only, and the process must not run as root:
+# files it creates as root cannot be rewritten in place by the Minecraft
+# servers, which run as uid 1000.
+assert_contains "$WEBDAV" "read_only: true" "the config mount is read-only"
+assert_contains "$WEBDAV" "user: \"1000:1000\"" "webdav does not run as root"
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -542,10 +582,18 @@ In `compose.yml`, replace the entire `webdav:` service block with:
   # WebDAV interface over the shared server-data volume.
   # Single service account by design -- see src/webdav/config.yml.
   webdav:
-    image: ghcr.io/hacdias/webdav:latest
+    # Pinned, not :latest -- this is the one service reachable from the
+    # internet through the tunnel, so an unreviewed image must not land here
+    # on the next pull.
+    image: ghcr.io/hacdias/webdav:v5.16.0
     container_name: webdav
     restart: unless-stopped
     command: ["-c", "/config.yml"]
+    # Both Minecraft base images run as uid 1000. Matching it means files
+    # created through WebDAV stay rewritable by the servers, and vice versa.
+    # The image is FROM scratch and binds an unprivileged port, so it needs
+    # no root. volume_init's chmod 777 covers directory traversal.
+    user: "1000:1000"
     environment:
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:?WEBDAV_USERNAME must be set in .env}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:?WEBDAV_PASSWORD must be set in .env}
@@ -633,6 +681,18 @@ Replace the entire contents of `src/caddy/Caddyfile` with:
 		reverse_proxy webdav:6065 {
 			header_up X-Real-IP {remote_host}
 			header_up REMOTE-HOST {remote_host}
+
+			# webdav has no container healthcheck -- its image is FROM
+			# scratch, with no shell or HTTP client to run one. Caddy is
+			# therefore its only liveness signal, so make that signal real.
+			# `restart: unless-stopped` catches a process that exits, but
+			# not one that is wedged and still listening; passive health
+			# checking turns that case into a logged, observable upstream
+			# failure instead of silence. Passive rather than active because
+			# every webdav endpoint requires auth, so there is no
+			# unauthenticated URI to probe.
+			fail_duration 30s
+			max_fails 3
 		}
 	}
 
