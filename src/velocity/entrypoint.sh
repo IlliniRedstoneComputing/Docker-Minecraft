@@ -75,8 +75,11 @@ render_env_placeholders "$CONFIG_DIR/forwarding.secret"
 
 echo "Secrets injected successfully."
 
-# Image-controlled: the image owns the plugin jars AND the configs shipped
-# beside them, so edits under plugins/ do not survive a restart.
+# Image-controlled: the image owns the plugin jars and the configs it ships
+# beside them -- plugins/bStats/config.txt, plugins/luckperms/config.yml and
+# plugins/viaversion/config.yml -- so edits to THOSE do not survive a restart.
+# Anything the image does not ship, such as plugins/viabackwards/config.yml,
+# is left alone. Any other top-level jar is removed, not merely shadowed.
 #
 # Clearing the jars first is what makes an UPGRADE work. Jar filenames carry
 # the version, so a bump is a rename, and copying without deleting would leave

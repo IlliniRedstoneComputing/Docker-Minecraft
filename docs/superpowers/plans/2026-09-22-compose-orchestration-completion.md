@@ -1559,8 +1559,11 @@ render_env_placeholders "$CONFIG_DIR/forwarding.secret"
 
 echo "Secrets injected successfully."
 
-# Image-controlled: the image owns the plugin jars AND the configs shipped
-# beside them, so edits under plugins/ do not survive a restart.
+# Image-controlled: the image owns the plugin jars and the configs it ships
+# beside them -- plugins/bStats/config.txt, plugins/luckperms/config.yml and
+# plugins/viaversion/config.yml -- so edits to THOSE do not survive a restart.
+# Anything the image does not ship, such as plugins/viabackwards/config.yml,
+# is left alone. Any other top-level jar is removed, not merely shadowed.
 #
 # Clearing the jars first is what makes an UPGRADE work. Jar filenames carry
 # the version, so a bump is a rename, and copying without deleting would leave
@@ -1630,14 +1633,36 @@ Then, after the `velocity has a restart policy` line:
 assert_contains "$VELOCITY" "LUCKPERMS_STORAGE_METHOD: mariadb" "velocity uses shared storage"
 assert_contains "$VELOCITY" "LUCKPERMS_DATA_ADDRESS: luckperms-db:3306" "velocity points at the shared database"
 assert_contains "$VELOCITY" "LUCKPERMS_MESSAGING_SERVICE: sql" "velocity uses sql messaging"
+
+# The credentials are the quiet half. With the three above but these missing,
+# LuckPerms reaches the right HOST and then falls back to the config file for
+# the rest -- database "minecraft", user "root", empty password -- which is the
+# same silent divergence, just one layer down. `every LUCKPERMS_DB default
+# agrees` does not backstop this: it is self-relative, so deleting a consumer
+# lowers both counts equally and stays green.
+assert_contains "$VELOCITY" "LUCKPERMS_DATA_DATABASE: luckperms" "velocity uses the shared database name"
+assert_contains "$VELOCITY" "LUCKPERMS_DATA_USERNAME: luckperms_user" "velocity uses the shared database user"
+assert_contains "$VELOCITY" "LUCKPERMS_DATA_PASSWORD: luckperms_password" "velocity uses the shared database password"
 ```
 
-Run `bash tests/test-compose-config.sh`. Expected: `32 run, 0 failed`.
+Run `bash tests/test-compose-config.sh`. Expected: `35 run, 0 failed`.
 
-Prove the assertions can fail before trusting them. Deleting velocity's `LUCKPERMS_*`
-block gives `32 run, 3 failed`; changing one client's `${LUCKPERMS_DB:-luckperms}` to a
-different default gives `every LUCKPERMS_DB default agrees / expected '9', got '8'`.
-Restore `compose.yml` afterwards and confirm CR=458 LF=458.
+Prove the assertions can fail before trusting them. Three separate controls, because
+each catches a different failure:
+
+- deleting velocity's whole `LUCKPERMS_*` block → `35 run, 6 failed`
+- deleting **only** the three credential lines, leaving storage method, address and
+  messaging in place → `35 run, 3 failed`. This is the case that was silently green
+  before the credential assertions existed: LuckPerms reaches the right host and then
+  quietly uses the config file's `minecraft` / `root` / empty password.
+- changing one client's `${LUCKPERMS_DB:-luckperms}` to a different default →
+  `every LUCKPERMS_DB default agrees / expected '9', got '8'`
+
+Note the needles are not unique stack-wide — `LUCKPERMS_DATA_ADDRESS: luckperms-db:3306`
+appears seven times in the rendered config. The assertions are scoped by
+`service_block velocity "$CONFIG"`, which returns only velocity's block, so removing the
+line from velocity alone still fails. Restore `compose.yml` after each control and
+confirm CR=458 LF=458.
 
 - [ ] **Step 6: Rebuild and verify Velocity joins shared storage**
 

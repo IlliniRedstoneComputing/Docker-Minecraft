@@ -106,6 +106,16 @@ assert_contains "$VELOCITY" "LUCKPERMS_STORAGE_METHOD: mariadb" "velocity uses s
 assert_contains "$VELOCITY" "LUCKPERMS_DATA_ADDRESS: luckperms-db:3306" "velocity points at the shared database"
 assert_contains "$VELOCITY" "LUCKPERMS_MESSAGING_SERVICE: sql" "velocity uses sql messaging"
 
+# The credentials are the quiet half. With the three above but these missing,
+# LuckPerms reaches the right HOST and then falls back to the config file for
+# the rest -- database "minecraft", user "root", empty password -- which is the
+# same silent divergence, just one layer down. `every LUCKPERMS_DB default
+# agrees` does not backstop this: it is self-relative, so deleting a consumer
+# lowers both counts equally and stays green.
+assert_contains "$VELOCITY" "LUCKPERMS_DATA_DATABASE: luckperms" "velocity uses the shared database name"
+assert_contains "$VELOCITY" "LUCKPERMS_DATA_USERNAME: luckperms_user" "velocity uses the shared database user"
+assert_contains "$VELOCITY" "LUCKPERMS_DATA_PASSWORD: luckperms_password" "velocity uses the shared database password"
+
 # The healthcheck override must be PRESENT and must match the real response
 # schema. The base image's inherited check greps '"up":true' while the endpoint
 # reports {"healthy":true,...}, so inheriting it leaves the container forever
