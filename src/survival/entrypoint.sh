@@ -29,7 +29,13 @@ CONFIG_DIR="/usr/src/init_data/config"
 render_env_placeholders() {
   local file="$1" content result pattern full varname default value
 
-  content=$(cat "$file")
+  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
+  # $(cat file) strips every trailing newline and `printf '%s'` does not put
+  # one back, so rendering a CRLF file silently drops its final CRLF --
+  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
+  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
+  # sed, caused here by the function written to replace sed.
+  content=$(cat "$file"; printf x); content="${content%x}"
   result=""
   # Matches ${NAME} or ${NAME:-default}. The default text may be empty
   # (${NAME:-}) but cannot itself contain a literal '}'.
@@ -60,18 +66,37 @@ render_env_placeholders() {
 
 echo "Injecting secrets..."
 
+# FabricProxy-Lite has no environment-variable support, so it is templated.
+# luckperms.conf is NOT templated: its connection settings come from
+# LUCKPERMS_* variables, which LuckPerms resolves ahead of the file.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
-render_env_placeholders "$CONFIG_DIR/luckperms/luckperms.conf"
 
 echo "Secrets injected successfully."
 
-echo "Checking for missing server files..."
+echo "Seeding /data..."
 
-# Use 'cp -n' to copy ONLY if the file doesn't exist in the volume
-# Or use 'cp -u' to copy only if the source is newer than the destination
-cp -a /usr/src/init_data/mods /data/
-cp -a /usr/src/init_data/config /data/
-cp -a /usr/src/init_data/server.properties /data/server.properties
+# Image-controlled: the image owns the mod set, so a mod dropped into
+# /data/mods by hand is removed rather than merely shadowed.
+#
+# Clearing the jars first is what makes an UPGRADE work. Mod filenames carry
+# the version, so a bump is a rename, and copying without deleting leaves BOTH
+# jars in /data/mods -- which Fabric refuses to start on, as duplicate mod ids.
+# Verified on a fixture: renaming fabric-api-0.136.1+1.21.8.jar to
+# fabric-api-0.137.0+1.21.8.jar in the image and re-running the copy alone
+# yields both. The glob is top-level only, so any per-mod state directory
+# under /data/mods survives.
+mkdir -p /data/mods
+rm -f /data/mods/*.jar
+cp -a /usr/src/init_data/mods/. /data/mods/
+
+# Admin-editable over WebDAV: seeded only when absent so edits survive restarts.
+mkdir -p /data/config
+cp -a -n /usr/src/init_data/config/. /data/config/
+[ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
+
+# world/ is deliberately never touched here. This server's world is
+# player-owned state. Contrast with lobby and onboarding, whose worlds are
+# code artifacts re-synced from the image on every start.
 
 echo "Initialization complete. Starting server..."
 
