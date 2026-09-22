@@ -14,7 +14,11 @@
 
 	# handle, NOT handle_path: the /files prefix must reach the WebDAV server,
 	# which strips it itself and adds it back to PROPFIND responses.
-	handle /files* {
+	#
+	# Two matchers, not the glob /files*, so matching is segment-bounded.
+	# /files* also matches /filesystem, which would be proxied to webdav
+	# instead of falling through to the catch-all redirect.
+	handle /files /files/* {
 		reverse_proxy webdav:6065 {
 			header_up X-Real-IP {remote_host}
 			header_up REMOTE-HOST {remote_host}
@@ -35,7 +39,8 @@
 
 	# handle_path, NOT handle: the LuckPerms REST API has no base-path setting
 	# and serves /user, /group and /track at the root, so the prefix is stripped.
-	handle_path /luckperms* {
+	# Segment-bounded for the same reason as /files above.
+	handle_path /luckperms /luckperms/* {
 		reverse_proxy luckperms-standalone:8080
 	}
 

@@ -148,8 +148,14 @@ services:
     networks:
       - frontend-network
     depends_on:
-      - webdav
-      - luckperms-standalone
+      # webdav has no healthcheck by design (FROM scratch: no shell, no HTTP
+      # client), so it can only be waited on for start. luckperms-standalone
+      # does have one, so gate on it -- consistent with how the rest of this
+      # file treats health-gated dependencies.
+      webdav:
+        condition: service_started
+      luckperms-standalone:
+        condition: service_healthy
 
   # Proxy for Minecraft servers
   velocity:

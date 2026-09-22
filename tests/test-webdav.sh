@@ -12,11 +12,41 @@ USER_NAME=$(grep -E '^WEBDAV_USERNAME=' .env | cut -d= -f2-)
 PASS=$(grep -E '^WEBDAV_PASSWORD=' .env | cut -d= -f2-)
 BASE="http://caddy:80"
 
+# Keep the password off the docker run argv, where it would be visible in
+# `docker inspect` and host `ps` output for the container's lifetime. curl
+# reads it from a config file on stdin instead.
+CURLRC=$(printf 'user = "%s:%s"\n' "$USER_NAME" "$PASS")
+
 # dav <curl-args...> -- runs curl inside the frontend network against Caddy.
 dav() {
-  docker run --rm --network irc-frontend-network curlimages/curl:latest \
-    -s -u "$USER_NAME:$PASS" "$@"
+  printf '%s' "$CURLRC" | docker run --rm -i --network irc-frontend-network \
+    curlimages/curl:latest -s -K - "$@"
 }
+
+# The suite writes real files into the shared volume. Clear the known paths
+# both before and after, so an interrupted run cannot poison the next one.
+# Proven necessary: a leftover webdav-moved.txt makes MOVE return 412 instead
+# of overwriting, and a leftover davtest/ makes MKCOL return 405 -- both
+# false failures with a confusing cause.
+dav_cleanup() {
+  for p in \
+    "$BASE/files/survival/webdav-test.txt" \
+    "$BASE/files/survival/webdav-moved.txt" \
+    "$BASE/files/survival/davtest/nested.txt" \
+    "$BASE/files/survival/davtest/"; do
+    dav -o /dev/null -X DELETE "$p" >/dev/null 2>&1 || true
+  done
+}
+# tests/lib.sh installs its own EXIT trap to remove its temp result logs.
+# A plain `trap dav_cleanup EXIT` here would replace that handler outright
+# instead of adding to it -- verified empirically: with only the plain form,
+# lib.sh's two temp files were left behind after every run. Capture the
+# existing handler and chain it after this script's own cleanup instead.
+_prior_exit_trap=$(trap -p EXIT)
+_prior_exit_trap=${_prior_exit_trap#trap -- \'}
+_prior_exit_trap=${_prior_exit_trap%\' EXIT}
+trap "dav_cleanup; ${_prior_exit_trap}" EXIT
+dav_cleanup
 
 echo "webdav through caddy"
 
@@ -80,5 +110,18 @@ assert_in "$CODE" "201 204" "PUT into a newly created collection succeeds"
 
 dav -o /dev/null -X DELETE "$BASE/files/survival/davtest/nested.txt"
 dav -o /dev/null -X DELETE "$BASE/files/survival/davtest/"
+
+# Route matching must be segment-bounded. A glob prefix like /files* also
+# matches /filesystem, proxying it to webdav instead of letting it fall
+# through to the catch-all redirect. Verified before the fix: /filesystem/
+# reached webdav (404 from webdav, not a redirect).
+CODE=$(dav -o /dev/null -w '%{http_code}' "$BASE/filesystem/")
+assert_in "$CODE" "301 302 307 308" "/filesystem does not leak into the webdav route"
+
+CODE=$(dav -o /dev/null -w '%{http_code}' "$BASE/luckpermsx/")
+assert_in "$CODE" "301 302 307 308" "/luckpermsx does not leak into the luckperms route"
+
+# Cleanup also runs from the EXIT trap; this is belt and braces.
+dav_cleanup
 
 finish
