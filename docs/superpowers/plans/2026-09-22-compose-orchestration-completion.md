@@ -714,7 +714,11 @@ Replace the entire contents of `src/caddy/Caddyfile` with:
 
 	# handle, NOT handle_path: the /files prefix must reach the WebDAV server,
 	# which strips it itself and adds it back to PROPFIND responses.
-	handle /files* {
+	#
+	# Two matchers, not the glob /files*, so matching is segment-bounded.
+	# /files* also matches /filesystem, which would be proxied to webdav
+	# instead of falling through to the catch-all redirect.
+	handle /files /files/* {
 		reverse_proxy webdav:6065 {
 			header_up X-Real-IP {remote_host}
 			header_up REMOTE-HOST {remote_host}
@@ -735,7 +739,8 @@ Replace the entire contents of `src/caddy/Caddyfile` with:
 
 	# handle_path, NOT handle: the LuckPerms REST API has no base-path setting
 	# and serves /user, /group and /track at the root, so the prefix is stripped.
-	handle_path /luckperms* {
+	# Segment-bounded for the same reason as /files above.
+	handle_path /luckperms /luckperms/* {
 		reverse_proxy luckperms-standalone:8080
 	}
 
@@ -762,8 +767,14 @@ In `compose.yml`, add this service immediately after the `webdav` service:
     networks:
       - frontend-network
     depends_on:
-      - webdav
-      - luckperms-standalone
+      # webdav has no healthcheck by design (FROM scratch: no shell, no HTTP
+      # client), so it can only be waited on for start. luckperms-standalone
+      # does have one, so gate on it -- consistent with how the rest of this
+      # file treats health-gated dependencies.
+      webdav:
+        condition: service_started
+      luckperms-standalone:
+        condition: service_healthy
 ```
 
 - [ ] **Step 3: Write the failing WebDAV behavior test**
@@ -785,11 +796,33 @@ USER_NAME=$(grep -E '^WEBDAV_USERNAME=' .env | cut -d= -f2-)
 PASS=$(grep -E '^WEBDAV_PASSWORD=' .env | cut -d= -f2-)
 BASE="http://caddy:80"
 
+# Keep the password off the docker run argv, where it would be visible in
+# `docker inspect` and host `ps` output for the container's lifetime. curl
+# reads it from a config file on stdin instead.
+CURLRC=$(printf 'user = "%s:%s"\n' "$USER_NAME" "$PASS")
+
 # dav <curl-args...> -- runs curl inside the frontend network against Caddy.
 dav() {
-  docker run --rm --network irc-frontend-network curlimages/curl:latest \
-    -s -u "$USER_NAME:$PASS" "$@"
+  printf '%s' "$CURLRC" | docker run --rm -i --network irc-frontend-network \
+    curlimages/curl:latest -s -K - "$@"
 }
+
+# The suite writes real files into the shared volume. Clear the known paths
+# both before and after, so an interrupted run cannot poison the next one.
+# Proven necessary: a leftover webdav-moved.txt makes MOVE return 412 instead
+# of overwriting, and a leftover davtest/ makes MKCOL return 405 -- both
+# false failures with a confusing cause.
+dav_cleanup() {
+  for p in \
+    "$BASE/files/survival/webdav-test.txt" \
+    "$BASE/files/survival/webdav-moved.txt" \
+    "$BASE/files/survival/davtest/nested.txt" \
+    "$BASE/files/survival/davtest/"; do
+    dav -o /dev/null -X DELETE "$p" >/dev/null 2>&1 || true
+  done
+}
+trap dav_cleanup EXIT
+dav_cleanup
 
 echo "webdav through caddy"
 
@@ -851,8 +884,18 @@ CODE=$(dav -o /dev/null -w '%{http_code}' -X PUT --data 'nested' \
   "$BASE/files/survival/davtest/nested.txt")
 assert_in "$CODE" "201 204" "PUT into a newly created collection succeeds"
 
-dav -o /dev/null -X DELETE "$BASE/files/survival/davtest/nested.txt"
-dav -o /dev/null -X DELETE "$BASE/files/survival/davtest/"
+# Route matching must be segment-bounded. A glob prefix like /files* also
+# matches /filesystem, proxying it to webdav instead of letting it fall
+# through to the catch-all redirect. Verified before the fix: /filesystem/
+# reached webdav (404 from webdav, not a redirect).
+CODE=$(dav -o /dev/null -w '%{http_code}' "$BASE/filesystem/")
+assert_in "$CODE" "301 302 307 308" "/filesystem does not leak into the webdav route"
+
+CODE=$(dav -o /dev/null -w '%{http_code}' "$BASE/luckpermsx/")
+assert_in "$CODE" "301 302 307 308" "/luckpermsx does not leak into the luckperms route"
+
+# Cleanup also runs from the EXIT trap; this is belt and braces.
+dav_cleanup
 
 finish
 ```
