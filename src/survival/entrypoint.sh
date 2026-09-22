@@ -29,13 +29,18 @@ CONFIG_DIR="/usr/src/init_data/config"
 render_env_placeholders() {
   local file="$1" content result pattern full varname default value
 
-  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
-  # $(cat file) strips every trailing newline and `printf '%s'` does not put
-  # one back, so rendering a CRLF file silently drops its final CRLF --
-  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
-  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
-  # sed, caused here by the function written to replace sed.
-  content=$(cat "$file"; printf x); content="${content%x}"
+  # Preserve the file's trailing newline. A bare $(cat "$file") strips it and
+  # `printf '%s'` does not put it back. Measured inside this image on a 14-byte
+  # CRLF fixture: 14 bytes in, 13 out, LF 2->1, CR unchanged -- so the file
+  # comes back ending in a dangling bare CR with mixed endings. The sentinel
+  # byte restores it exactly.
+  #
+  # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
+  # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
+  # function would fall through with content="", truncate the file to zero
+  # bytes, and let the server start on it. For FabricProxy-Lite.toml that means
+  # an empty forwarding secret on a server running ONLINE_MODE=FALSE.
+  content=$(cat "$file" && printf x); content="${content%x}"
   result=""
   # Matches ${NAME} or ${NAME:-default}. The default text may be empty
   # (${NAME:-}) but cannot itself contain a literal '}'.
@@ -69,6 +74,17 @@ echo "Injecting secrets..."
 # FabricProxy-Lite has no environment-variable support, so it is templated.
 # luckperms.conf is NOT templated: its connection settings come from
 # LUCKPERMS_* variables, which LuckPerms resolves ahead of the file.
+#
+# ROTATION CAVEAT. This renders the IMAGE's copy. FabricProxy-Lite.toml is both
+# secret-bearing and admin-editable, and the seeding below resolves that
+# conflict in favour of admin-editable -- so on a volume that has already
+# booted, a rotated VELOCITY_SECRET never reaches /data/config. velocity's own
+# forwarding.secret IS re-copied unconditionally, so after a rotation the proxy
+# moves to the new secret while every Fabric backend keeps the old one, and the
+# only symptom is backends refusing connections.
+#
+# To rotate: change VELOCITY_SECRET, delete /data/config/FabricProxy-Lite.toml
+# on every backend, then recreate the containers.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
 
 echo "Secrets injected successfully."

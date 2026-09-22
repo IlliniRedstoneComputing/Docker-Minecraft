@@ -1534,13 +1534,17 @@ Replace:
 with:
 
 ```bash
-  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
-  # $(cat file) strips every trailing newline and `printf '%s'` does not put
-  # one back, so rendering a CRLF file silently drops its final CRLF --
-  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
-  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
-  # sed, caused here by the function written to replace sed.
-  content=$(cat "$file"; printf x); content="${content%x}"
+  # Preserve the file's trailing newline. A bare $(cat "$file") strips it and
+  # `printf '%s'` does not put it back. Measured inside the image on a 14-byte
+  # CRLF fixture: 14 bytes in, 13 out, LF 2->1, CR unchanged -- so the file
+  # comes back ending in a dangling bare CR with mixed endings. The sentinel
+  # byte restores it exactly.
+  #
+  # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
+  # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
+  # function would fall through with content="", truncate the file to zero
+  # bytes, and let the server start on it.
+  content=$(cat "$file" && printf x); content="${content%x}"
 ```
 
 - [ ] **Step 4: Apply the seeding policy to the Velocity entrypoint**
@@ -1817,13 +1821,17 @@ In `src/survival/entrypoint.sh` (LF-only — keep it LF), replace:
 with:
 
 ```bash
-  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
-  # $(cat file) strips every trailing newline and `printf '%s'` does not put
-  # one back, so rendering a CRLF file silently drops its final CRLF --
-  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
-  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
-  # sed, caused here by the function written to replace sed.
-  content=$(cat "$file"; printf x); content="${content%x}"
+  # Preserve the file's trailing newline. A bare $(cat "$file") strips it and
+  # `printf '%s'` does not put it back. Measured inside the image on a 14-byte
+  # CRLF fixture: 14 bytes in, 13 out, LF 2->1, CR unchanged -- so the file
+  # comes back ending in a dangling bare CR with mixed endings. The sentinel
+  # byte restores it exactly.
+  #
+  # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
+  # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
+  # function would fall through with content="", truncate the file to zero
+  # bytes, and let the server start on it.
+  content=$(cat "$file" && printf x); content="${content%x}"
 ```
 
 - [ ] **Step 3: Apply the seeding policy**
@@ -1959,6 +1967,13 @@ which would have left the unrendered-config-copy fix uncommitted.
 
 These two repositories currently share a byte-identical entrypoint that injects the Velocity secret with `sed`, which silently corrupts any secret containing `/`, `&`, or `\`. They also copy `world/` unconditionally — **which is correct and must be preserved**, because those worlds are code artifacts.
 
+**Line endings:** every `entrypoint.sh` in this repository is LF-only, enforced by the
+`*.sh text eol=lf` rule in `.gitattributes`, so these two files need no CRLF handling —
+write them as LF and verify with `tr -cd '\r' < file | wc -c` returning `0`. Do not
+generalize that to other files: the Dockerfiles are genuinely mixed (`lobby` 24/24 and
+`onboarding` 29/29 are CRLF, while `survival`, `project-0` and `project-1` are LF-only),
+and the `luckperms.conf` files are CRLF at 684/684. This task touches neither.
+
 - [ ] **Step 1: Branch both submodules**
 
 ```bash
@@ -2002,13 +2017,17 @@ CONFIG_DIR="/usr/src/init_data/config"
 render_env_placeholders() {
   local file="$1" content result pattern full varname default value
 
-  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
-  # $(cat file) strips every trailing newline and `printf '%s'` does not put
-  # one back, so rendering a CRLF file silently drops its final CRLF --
-  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
-  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
-  # sed, caused here by the function written to replace sed.
-  content=$(cat "$file"; printf x); content="${content%x}"
+  # Preserve the file's trailing newline. A bare $(cat "$file") strips it and
+  # `printf '%s'` does not put it back. Measured inside the image on a 14-byte
+  # CRLF fixture: 14 bytes in, 13 out, LF 2->1, CR unchanged -- so the file
+  # comes back ending in a dangling bare CR with mixed endings. The sentinel
+  # byte restores it exactly.
+  #
+  # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
+  # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
+  # function would fall through with content="", truncate the file to zero
+  # bytes, and let the server start on it.
+  content=$(cat "$file" && printf x); content="${content%x}"
   result=""
   # Matches ${NAME} or ${NAME:-default}. The default text may be empty
   # (${NAME:-}) but cannot itself contain a literal '}'.
@@ -2176,13 +2195,17 @@ CONFIG_DIR="/usr/src/init_data/config"
 render_env_placeholders() {
   local file="$1" content result pattern full varname default value
 
-  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
-  # $(cat file) strips every trailing newline and `printf '%s'` does not put
-  # one back, so rendering a CRLF file silently drops its final CRLF --
-  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
-  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
-  # sed, caused here by the function written to replace sed.
-  content=$(cat "$file"; printf x); content="${content%x}"
+  # Preserve the file's trailing newline. A bare $(cat "$file") strips it and
+  # `printf '%s'` does not put it back. Measured inside the image on a 14-byte
+  # CRLF fixture: 14 bytes in, 13 out, LF 2->1, CR unchanged -- so the file
+  # comes back ending in a dangling bare CR with mixed endings. The sentinel
+  # byte restores it exactly.
+  #
+  # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
+  # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
+  # function would fall through with content="", truncate the file to zero
+  # bytes, and let the server start on it.
+  content=$(cat "$file" && printf x); content="${content%x}"
   result=""
   # Matches ${NAME} or ${NAME:-default}. The default text may be empty
   # (${NAME:-}) but cannot itself contain a literal '}'.

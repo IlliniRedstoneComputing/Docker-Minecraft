@@ -29,13 +29,18 @@ CONFIG_DIR="/usr/src/init_data"
 render_env_placeholders() {
   local file="$1" content result pattern full varname default value
 
-  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
-  # $(cat file) strips every trailing newline and `printf '%s'` does not put
-  # one back, so rendering a CRLF file silently drops its final CRLF --
-  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
-  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
-  # sed, caused here by the function written to replace sed.
-  content=$(cat "$file"; printf x); content="${content%x}"
+  # Preserve the file's trailing newline. A bare $(cat "$file") strips it and
+  # `printf '%s'` does not put it back. Measured inside this image on a 14-byte
+  # CRLF fixture: 14 bytes in, 13 out, LF 2->1, CR unchanged -- so the file
+  # comes back ending in a dangling bare CR with mixed endings. velocity.toml
+  # is CRLF and genuinely hits this. The sentinel byte restores it exactly.
+  #
+  # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
+  # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
+  # function would fall through with content="", truncate the file to zero
+  # bytes, and let the proxy start on it. For forwarding.secret that means an
+  # empty secret, which every backend would then reject.
+  content=$(cat "$file" && printf x); content="${content%x}"
   result=""
   # Matches ${NAME} or ${NAME:-default}. The default text may be empty
   # (${NAME:-}) but cannot itself contain a literal '}'.
