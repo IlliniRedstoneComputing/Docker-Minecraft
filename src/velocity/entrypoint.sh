@@ -60,18 +60,24 @@ render_env_placeholders() {
 
 echo "Injecting secrets..."
 
+# velocity.toml references forwarding-secret-file and holds no secret itself,
+# but render it anyway so future placeholders work.
 render_env_placeholders "$CONFIG_DIR/velocity.toml"
 render_env_placeholders "$CONFIG_DIR/forwarding.secret"
-render_env_placeholders "$CONFIG_DIR/plugins/luckperms/config.yml"
 
 echo "Secrets injected successfully."
 
-# Use 'cp -n' to copy ONLY if the file doesn't exist in the volume
-# Or use 'cp -u' to copy only if the source is newer than the destination
-cp -a /usr/src/init_data/plugins /server/plugins
-cp -a /usr/src/init_data/velocity.toml /server/velocity.toml
-cp -a /usr/src/init_data/forwarding.secret /server/forwarding.secret
-cp -a /usr/src/init_data/server-icon.png /server/server-icon.png
+# Image-controlled: always re-synced so plugin upgrades actually land.
+mkdir -p /server/plugins
+cp -a "$CONFIG_DIR/plugins/." /server/plugins/
+
+# Always rewritten so secret rotation propagates.
+cp -a "$CONFIG_DIR/forwarding.secret" /server/forwarding.secret
+
+# Admin-editable over WebDAV: seeded only when absent, so operators can add
+# backend servers to velocity.toml without losing the change on restart.
+[ -f /server/velocity.toml ] || cp -a "$CONFIG_DIR/velocity.toml" /server/velocity.toml
+[ -f /server/server-icon.png ] || cp -a "$CONFIG_DIR/server-icon.png" /server/server-icon.png
 
 echo "Copying complete. Starting Velocity..."
 

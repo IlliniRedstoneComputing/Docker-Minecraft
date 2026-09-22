@@ -70,7 +70,10 @@ server: proxy
 #
 # - A H2 database is the default option.
 # - If you want to edit data manually in "traditional" storage files, we suggest using YAML.
-storage-method: ${LUCKPERMS_STORAGE_METHOD:-h2}
+# Connection settings come from LUCKPERMS_* environment variables in
+# compose.yml, which LuckPerms resolves ahead of this file. Do not add
+# connection settings here.
+storage-method: h2
 
 # The following block defines the settings for remote database storage methods.
 #
@@ -81,15 +84,15 @@ data:
   # - The standard DB engine port is used by default
   #   (MySQL: 3306, PostgreSQL: 5432, MongoDB: 27017)
   # - Specify as "host:port" if differs
-  address: ${LUCKPERMS_DB_ADDRESS:-localhost:3306}
+  address: localhost:3306
 
   # The name of the database to store LuckPerms data in.
   # - This must be created already. Don't worry about this setting if you're using MongoDB.
-  database: ${LUCKPERMS_DB_NAME:-luckperms}
+  database: minecraft
 
   # Credentials for the database.
-  username: ${LUCKPERMS_DB_USERNAME:-root}
-  password: ${LUCKPERMS_DB_PASSWORD:-}
+  username: root
+  password: ""
 
   # These settings apply to the MySQL connection pool.
   # - The default values will be suitable for the majority of users.
@@ -226,7 +229,7 @@ watch-files: true
 #                    configured below.
 #   => custom        Uses a messaging service provided using the LuckPerms API.
 #   => auto          Attempts to automatically setup a messaging service using redis or sql.
-messaging-service: ${LUCKPERMS_MESSAGING_SERVICE:-auto}
+messaging-service: sql
 
 # If LuckPerms should automatically push updates after a change has been made with a command.
 auto-push-updates: true
@@ -245,10 +248,10 @@ broadcast-received-log-entries: false
 # Port 6379 is used by default; set address to "host:port" if differs
 # Multiple Redis nodes can be specified in the same format as a string list under the name "addresses".
 redis:
-  enabled: ${LUCKPERMS_REDIS_ENABLED:-false}
-  address: ${LUCKPERMS_REDIS_ADDRESS:-localhost:6379}
-  username: ${LUCKPERMS_REDIS_USERNAME:-}
-  password: ${LUCKPERMS_REDIS_PASSWORD:-}
+  enabled: false
+  address: localhost
+  username: ""
+  password: ""
   # Settings for Redis Sentinel.
   # Sentinel provides high availability for Redis by monitoring master/replica instances.
   # Port 26379 is used by default for sentinel nodes.
@@ -263,20 +266,20 @@ redis:
 # Settings for Nats.
 # Port 4222 is used by default; set address to "host:port" if differs
 nats:
-  enabled: ${LUCKPERMS_NATS_ENABLED:-false}
-  address: ${LUCKPERMS_NATS_ADDRESS:-localhost:4222}
-  username: ${LUCKPERMS_NATS_USERNAME:-}
-  password: ${LUCKPERMS_NATS_PASSWORD:-}
+  enabled: false
+  address: localhost:4222
+  username: ""
+  password: ""
   token: ""
 
 # Settings for RabbitMQ.
 # Port 5672 is used by default; set address to "host:port" if differs
 rabbitmq:
-  enabled: ${LUCKPERMS_RABBITMQ_ENABLED:-false}
-  address: ${LUCKPERMS_RABBITMQ_ADDRESS:-localhost:5672}
-  vhost: ${LUCKPERMS_RABBITMQ_VHOST:-/}
-  username: ${LUCKPERMS_RABBITMQ_USERNAME:-guest}
-  password: ${LUCKPERMS_RABBITMQ_PASSWORD:-guest}
+  enabled: false
+  address: localhost:5672
+  vhost: "/"
+  username: guest
+  password: guest
 
 # +----------------------------------------------------------------------------------------------+ #
 # |                                                                                              | #

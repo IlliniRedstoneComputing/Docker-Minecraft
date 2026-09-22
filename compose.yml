@@ -187,6 +187,16 @@ services:
     environment:
       - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
       - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
+
+      # Luckperms database configuration
+      - LUCKPERMS_STORAGE_METHOD=mariadb
+      - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
+      - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
+      - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-luckperms_user}
+      - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-luckperms_password}
+
+      # Luckperms messaging service configuration
+      - LUCKPERMS_MESSAGING_SERVICE=sql
     labels:
       - docker-volume-backup.stop-during-backup=true
     volumes:
