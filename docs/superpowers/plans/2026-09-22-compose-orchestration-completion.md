@@ -1132,12 +1132,25 @@ Create `scripts/normalize-luckperms-conf.sh`:
 #
 # The `server = "<name>"` line is deliberately left alone: that is the
 # server's identity and belongs with the server.
+#
+# CRLF: these files are CRLF in the repository (684 CR / 684 LF each). A bare
+# `sed -i` would strip the CR from every line it rewrites and leave the rest
+# CRLF, producing a mixed-ending file and a diff touching all 680 lines. So
+# each file is converted to LF, edited, and converted back only if it started
+# as CRLF.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 for conf in src/*/server/config/luckperms/luckperms.conf; do
   echo "normalizing $conf"
+
+  had_crlf=0
+  if grep -q $'\r' "$conf"; then
+    had_crlf=1
+    sed -i 's/\r$//' "$conf"
+  fi
+
   sed -i \
     -e 's|^storage-method = .*|storage-method = "h2"|' \
     -e 's|^  address = "\${LUCKPERMS_DATA_ADDRESS.*|  address = "localhost:3306"|' \
@@ -1158,6 +1171,11 @@ for conf in src/*/server/config/luckperms/luckperms.conf; do
     /^\}/ { inredis = 0 }
     { print }
   ' "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
+
+  # Restore CRLF only if the file had it to begin with.
+  if [ "$had_crlf" -eq 1 ]; then
+    sed -i 's/$/\r/' "$conf"
+  fi
 done
 
 echo "done"
@@ -1203,6 +1221,19 @@ grep -h '^server = ' src/*/server/config/luckperms/luckperms.conf
 ```
 
 Expected: five distinct names — `lobby`, `onboarding`, `project-0`, `project-1`, `survival`. Each server keeps its own identity.
+
+Then confirm CRLF survived and the diff is small, not a whole-file rewrite:
+
+```bash
+for f in src/*/server/config/luckperms/luckperms.conf; do
+  printf '%-52s CR=%s LF=%s\n' "$f" \
+    "$(tr -cd '\r' < "$f" | wc -c)" "$(tr -cd '\n' < "$f" | wc -c)"
+done
+git diff --stat src/survival/server/config/luckperms/luckperms.conf
+```
+
+Expected: CR equals LF for every file (684 each), and the survival diff shows roughly
+a dozen changed lines, not 680.
 
 - [ ] **Step 5: Align the mchprs credential defaults**
 
