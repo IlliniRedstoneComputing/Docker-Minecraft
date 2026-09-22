@@ -44,28 +44,6 @@ services:
       volume_init:
         condition: service_completed_successfully
 
-  # Caddy reverse proxy for routing HTTPS traffic to the luckperms service
-  caddy:
-    image: caddy:2-alpine
-    container_name: caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      - MINECRAFT_HOSTNAME=${MINECRAFT_HOSTNAME:-localhost}
-    networks:
-      - frontend-network
-    volumes:
-      - ./src/caddy/:/etc/caddy
-      - caddy-data:/data
-    depends_on:
-      luckperms-standalone:
-        condition: service_healthy
-      sftpgo:
-        condition: service_healthy
-
   # MariaDB database for luckperms player permissions
   luckperms-db:
     image: mariadb:11.4
@@ -86,7 +64,7 @@ services:
     networks:
       - minecraft-network
 
-  # Standlone luckperms instance with rest api
+  # Standalone luckperms instance with rest api
   luckperms-standalone:
     build:
       context: ./src/luckperms-standalone
@@ -94,7 +72,6 @@ services:
     restart: unless-stopped
     environment:
       # configure the LuckPerms standalone "plugin"
-      # https://luckperms.net/wiki/Configuration#environment-variables
       - LUCKPERMS_STORAGE_METHOD=mariadb
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
@@ -105,7 +82,6 @@ services:
       - LUCKPERMS_MESSAGING_SERVICE=sql
 
       # configure the REST API
-      # https://github.com/LuckPerms/rest-api#configuration
       - LUCKPERMS_REST_HTTP_PORT=8080
       - LUCKPERMS_REST_AUTH=true
       - LUCKPERMS_REST_AUTH_KEYS=${LUCKPERMS_SECRET:-luckpermssecret}
@@ -129,40 +105,51 @@ services:
       luckperms-db:
         condition: service_healthy
 
-  # SFTP/HTTP server for file transfers
-  sftpgo:
-    image: drakkan/sftpgo:v2.6-alpine
-    container_name: sftpgo
-    restart: unless-stopped
+  # # SFTP/HTTP server for file transfers
+  # sftpgo:
+  #   image: drakkan/sftpgo:v2.6-alpine
+  #   container_name: sftpgo
+  #   restart: unless-stopped
+  #   environment:
+  #     # URL of your custom backend API endpoint
+  #     - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HOOK=${SFTPGO_AUTH_HOOK:-http://localhost:3000/api/sftpgo-auth}
+
+  #     # Optional: Send a secret key in the HTTP header to secure the hook endpoint
+  #     - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_KEY=X-SFTPGo-Hook-Secret
+  #     - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_VALUE=${SFTPGO_AUTH_SECRET:-sftpgo-secret}
+
+  #     # Define fallback scope (0 = fallback enabled, 1 = external auth only)
+  #     - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_SCOPE=0
+
+  #     # Set non-root HTTP access
+  #     - SFTPGO_HTTPD__WEB_ROOT=/files
+
+  #   volumes:
+  #     - sftpgo-data:/var/lib/sftpgo
+  #     - managed-files:/srv/sftpgo/data
+  #   healthcheck:
+  #     test: ["CMD", "sftpgo", "ping"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #   networks:
+  #     - frontend-network
+  #   depends_on:
+  #     volume_init:
+  #       condition: service_completed_successfully
+
+  # WebDAV server for file access via HTTP
+  webdav:
+    image: sfuhrm/docker-nginx-webdav
+    container_name: webdav
     ports:
-      - "2022:2022" # SSH / SFTP
+      - "8080:80"
     environment:
-      # URL of your custom backend API endpoint
-      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HOOK=${SFTPGO_AUTH_HOOK:-http://localhost:3000/api/sftpgo-auth}
-
-      # Optional: Send a secret key in the HTTP header to secure the hook endpoint
-      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_KEY=X-SFTPGo-Hook-Secret
-      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_VALUE=${SFTPGO_AUTH_SECRET:-sftpgo-secret}
-
-      # Define fallback scope (0 = fallback enabled, 1 = external auth only)
-      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_SCOPE=0
-
-      # Set non-root HTTP access
-      - SFTPGO_HTTPD__WEB_ROOT=/files
-
+      - USERNAME=${WEBDAV_USERNAME:-webdavuser}
+      - PASSWORD=${WEBDAV_PASSWORD:-SecretPassword123}
     volumes:
-      - sftpgo-data:/var/lib/sftpgo
-      - managed-files:/srv/sftpgo/data
-    healthcheck:
-      test: ["CMD", "sftpgo", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - frontend-network
-    depends_on:
-      volume_init:
-        condition: service_completed_successfully
+      - /path/to/your/files:/media/data
+    restart: unless-stopped
 
   # Proxy for Minecraft servers
   velocity:
@@ -172,7 +159,7 @@ services:
         - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
     container_name: velocity
     ports:
-      - "${VELOCITY_PORT:-25565}:25565"
+      - 25565:25565
     environment:
       - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
       - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
@@ -327,8 +314,6 @@ services:
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
-
-      # ! MCHPRS does not support a redis messenger. Cry about it ig
     labels:
       - docker-volume-backup.stop-during-backup=true
     networks:
@@ -424,28 +409,20 @@ services:
 
 # Persistent volumes for data storage
 volumes:
-  # All volumes that need to be managed by the file browser should be subdirectories of this "managed-files" volume.
-  # This allows us to easily backup/restore all files through the file browser and ensures proper permissions are set by the volume_init service.
   managed-files:
     driver: local
-
-  caddy-data:
-    driver: local
-
   sftpgo-data:
     driver: local
-
   luckperms-db-data:
+    driver: local
+  wireguard-module-data:
     driver: local
 
 # Custom network for service communication
 networks:
-  # ! In this setup, the backend and filebrowser services act as a gateway between the two networks
-  # Minecraft servers and related services that need to communicate with one another
   minecraft-network:
     driver: bridge
     name: irc-minecraft-network
-  # Caddy + http services that communicate directly with users
   frontend-network:
     driver: bridge
     name: irc-frontend-network

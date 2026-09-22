@@ -44,34 +44,6 @@ services:
       volume_init:
         condition: service_completed_successfully
 
-  # WireGuard Client Service to bridge home server stack to external VPS
-  # wireguard:
-  #   image: lscr.io/linuxserver/wireguard:latest
-  #   container_name: wireguard
-  #   restart: unless-stopped
-  #   cap_add:
-  #     - NET_ADMIN
-  #     - SYS_MODULE
-  #   environment:
-  #     - PUID=1000
-  #     - PGID=1000
-  #     - TZ=UTC
-  #   volumes:
-  #     - ./wg0.conf:/config/wg0.conf
-  #     - wireguard-module-data:/lib/modules
-  #   sysctls:
-  #     - net.ipv4.conf.all.src_valid_mark=1
-  #     - net.ipv4.ip_forward=1
-  #   # Declare the ports that VPS iptables will forward into your tunnel
-  #   ports:
-  #     - "80:80" # HTTP (e.g. Caddy on VPS or web app)
-  #     - "443:443" # HTTPS
-  #     # - "${VELOCITY_PORT:-25565}:25565" # Minecraft Proxy
-  #     - "2022:2022" # SFTP / SSH
-  #   networks:
-  #     - frontend-network
-  #     - minecraft-network
-
   # MariaDB database for luckperms player permissions
   luckperms-db:
     image: mariadb:11.4
@@ -92,7 +64,7 @@ services:
     networks:
       - minecraft-network
 
-  # Standalone luckperms instance with rest api
+  # Standlone luckperms instance with rest api
   luckperms-standalone:
     build:
       context: ./src/luckperms-standalone
@@ -100,6 +72,7 @@ services:
     restart: unless-stopped
     environment:
       # configure the LuckPerms standalone "plugin"
+      # https://luckperms.net/wiki/Configuration#environment-variables
       - LUCKPERMS_STORAGE_METHOD=mariadb
       - LUCKPERMS_DATA_ADDRESS=luckperms-db:3306
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
@@ -110,6 +83,7 @@ services:
       - LUCKPERMS_MESSAGING_SERVICE=sql
 
       # configure the REST API
+      # https://github.com/LuckPerms/rest-api#configuration
       - LUCKPERMS_REST_HTTP_PORT=8080
       - LUCKPERMS_REST_AUTH=true
       - LUCKPERMS_REST_AUTH_KEYS=${LUCKPERMS_SECRET:-luckpermssecret}
@@ -133,39 +107,6 @@ services:
       luckperms-db:
         condition: service_healthy
 
-  # SFTP/HTTP server for file transfers
-  sftpgo:
-    image: drakkan/sftpgo:v2.6-alpine
-    container_name: sftpgo
-    restart: unless-stopped
-    environment:
-      # URL of your custom backend API endpoint
-      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HOOK=${SFTPGO_AUTH_HOOK:-http://localhost:3000/api/sftpgo-auth}
-
-      # Optional: Send a secret key in the HTTP header to secure the hook endpoint
-      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_KEY=X-SFTPGo-Hook-Secret
-      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_HEADER_VALUE=${SFTPGO_AUTH_SECRET:-sftpgo-secret}
-
-      # Define fallback scope (0 = fallback enabled, 1 = external auth only)
-      - SFTPGO_AUTH_SERVICE__EXTERNAL_AUTH_SCOPE=0
-
-      # Set non-root HTTP access
-      - SFTPGO_HTTPD__WEB_ROOT=/files
-
-    volumes:
-      - sftpgo-data:/var/lib/sftpgo
-      - managed-files:/srv/sftpgo/data
-    healthcheck:
-      test: ["CMD", "sftpgo", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - frontend-network
-    depends_on:
-      volume_init:
-        condition: service_completed_successfully
-
   # Proxy for Minecraft servers
   velocity:
     build:
@@ -174,7 +115,7 @@ services:
         - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
     container_name: velocity
     ports:
-      - 25565:25565
+      - "${VELOCITY_PORT:-25565}:25565"
     environment:
       - JAVA_OPTS=${JAVA_OPTS:--Xmx2G -Xms1G}
       - VELOCITY_SECRET=${VELOCITY_SECRET:-velocitysecret}
@@ -329,6 +270,8 @@ services:
       - LUCKPERMS_DATA_DATABASE=${LUCKPERMS_DB:-luckperms}
       - LUCKPERMS_DATA_USERNAME=${LUCKPERMS_DB_USER:-user_luckperms}
       - LUCKPERMS_DATA_PASSWORD=${LUCKPERMS_DB_PASSWORD:-password_luckperms}
+
+      # ! MCHPRS does not support a redis messenger. Cry about it ig
     labels:
       - docker-volume-backup.stop-during-backup=true
     networks:
@@ -424,20 +367,28 @@ services:
 
 # Persistent volumes for data storage
 volumes:
+  # All volumes that need to be managed by the file browser should be subdirectories of this "managed-files" volume.
+  # This allows us to easily backup/restore all files through the file browser and ensures proper permissions are set by the volume_init service.
   managed-files:
     driver: local
+
+  caddy-data:
+    driver: local
+
   sftpgo-data:
     driver: local
+
   luckperms-db-data:
-    driver: local
-  wireguard-module-data:
     driver: local
 
 # Custom network for service communication
 networks:
+  # ! In this setup, the backend and filebrowser services act as a gateway between the two networks
+  # Minecraft servers and related services that need to communicate with one another
   minecraft-network:
     driver: bridge
     name: irc-minecraft-network
+  # Caddy + http services that communicate directly with users
   frontend-network:
     driver: bridge
     name: irc-frontend-network
