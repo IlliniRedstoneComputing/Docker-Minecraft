@@ -128,7 +128,20 @@ CFD=$(service_block cloudflared "$CONFIG")
 # Assert the pinned image rather than the bare word "cloudflared", which
 # would also match the container name and prove nothing about the image.
 assert_contains "$CFD" "cloudflare/cloudflared:2026.9.1" "cloudflared uses a pinned image"
-assert_contains "$CFD" "TUNNEL_TOKEN" "cloudflared reads TUNNEL_TOKEN"
 assert_not_contains "$CFD" "ports:" "cloudflared declares no ports"
+
+# The token wiring is asserted against $RAW, not $CONFIG. Rendering
+# substitutes the value and erases BOTH the source variable name and the
+# `:?` required guard -- the rendered line is just
+# `TUNNEL_TOKEN: <value>`. A $CONFIG needle therefore proves only that the
+# destination key is spelled TUNNEL_TOKEN. Verified: rewiring the source to
+# ${WEBDAV_PASSWORD:-fallback}, dropping the guard entirely, still passed.
+#
+# This single needle covers all three properties at once: the destination
+# key cloudflared requires, the correct source variable, and the `:?` guard
+# that makes a missing token fail loudly instead of silently running empty.
+CFD_RAW=$(service_block cloudflared "$RAW")
+assert_contains "$CFD_RAW" 'TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:?' \
+  "the tunnel token is sourced from CLOUDFLARE_TUNNEL_TOKEN and required"
 
 finish
