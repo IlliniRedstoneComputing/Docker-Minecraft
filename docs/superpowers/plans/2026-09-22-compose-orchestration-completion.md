@@ -1437,79 +1437,82 @@ with:
 
 - [ ] **Step 2: Normalize the Velocity LuckPerms config**
 
-In `src/velocity/server/plugins/luckperms/config.yml`, replace these lines:
+`src/velocity/server/plugins/luckperms/config.yml` is **CRLF (623 CR / 623 LF)**. Use
+`perl -i -pe`, never `sed -i` — see the platform section in `AGENTS.md`. Patterns use
+`[^\r\n]*` rather than `.*` so the carriage return is not swallowed.
 
-```yaml
-storage-method: ${LUCKPERMS_STORAGE_METHOD:-h2}
-data:
-  address: ${LUCKPERMS_DB_ADDRESS:-localhost:3306}
-  database: ${LUCKPERMS_DB_NAME:-luckperms}
-  username: ${LUCKPERMS_DB_USERNAME:-root}
-  password: ${LUCKPERMS_DB_PASSWORD:-}
+This file is upstream LuckPerms' own annotated config: every setting sits between
+explanatory comment lines. **Replace the placeholder lines individually, in place.** Do
+not paste a contiguous YAML block over the region — that silently deletes the upstream
+comments between `address:`, `database:`, and `username:`, and between the `redis:`,
+`sentinel:`, `nats:`, and `rabbitmq:` blocks.
+
+There are 19 placeholders across 5 regions. Run:
+
+```bash
+perl -i -pe '
+  s|^storage-method: [^\r\n]*|storage-method: h2|;
+  s|^  address: \$\{LUCKPERMS_DB_ADDRESS[^\r\n]*|  address: localhost:3306|;
+  s|^  database: \$\{LUCKPERMS_DB_NAME[^\r\n]*|  database: minecraft|;
+  s|^  username: \$\{LUCKPERMS_DB_USERNAME[^\r\n]*|  username: root|;
+  s|^  password: \$\{LUCKPERMS_DB_PASSWORD[^\r\n]*|  password: ""|;
+  s|^messaging-service: [^\r\n]*|messaging-service: sql|;
+
+  s|^  enabled: \$\{LUCKPERMS_REDIS_ENABLED[^\r\n]*|  enabled: false|;
+  s|^  address: \$\{LUCKPERMS_REDIS_ADDRESS[^\r\n]*|  address: localhost|;
+  s|^  username: \$\{LUCKPERMS_REDIS_USERNAME[^\r\n]*|  username: ""|;
+  s|^  password: \$\{LUCKPERMS_REDIS_PASSWORD[^\r\n]*|  password: ""|;
+
+  s|^  enabled: \$\{LUCKPERMS_NATS_ENABLED[^\r\n]*|  enabled: false|;
+  s|^  address: \$\{LUCKPERMS_NATS_ADDRESS[^\r\n]*|  address: localhost:4222|;
+  s|^  username: \$\{LUCKPERMS_NATS_USERNAME[^\r\n]*|  username: ""|;
+  s|^  password: \$\{LUCKPERMS_NATS_PASSWORD[^\r\n]*|  password: ""|;
+
+  s|^  enabled: \$\{LUCKPERMS_RABBITMQ_ENABLED[^\r\n]*|  enabled: false|;
+  s|^  address: \$\{LUCKPERMS_RABBITMQ_ADDRESS[^\r\n]*|  address: localhost:5672|;
+  s|^  vhost: \$\{LUCKPERMS_RABBITMQ_VHOST[^\r\n]*|  vhost: "/"|;
+  s|^  username: \$\{LUCKPERMS_RABBITMQ_USERNAME[^\r\n]*|  username: guest|;
+  s|^  password: \$\{LUCKPERMS_RABBITMQ_PASSWORD[^\r\n]*|  password: guest|;
+' src/velocity/server/plugins/luckperms/config.yml
 ```
 
-with:
+The `redis:` and `nats:` `username`/`password` patterns are disambiguated by variable
+name, not by position, so they cannot cross-match the `data:` block above them.
 
-```yaml
-# Connection settings come from LUCKPERMS_* environment variables in
-# compose.yml, which LuckPerms resolves ahead of this file. Do not add
-# connection settings here.
-storage-method: h2
-data:
-  address: localhost:3306
-  database: minecraft
-  username: root
-  password: ""
+Add a header note above `storage-method:` recording where the real values come from. It
+must be inserted, not pasted over the neighbouring comment lines:
+
+```bash
+perl -i -pe '
+  if (s|^storage-method: h2|# Connection settings come from LUCKPERMS_* environment variables in\r\n# compose.yml, which LuckPerms resolves ahead of this file. Do not add\r\n# connection settings here.\r\nstorage-method: h2|) { }
+' src/velocity/server/plugins/luckperms/config.yml
 ```
 
-Then replace:
-
-```yaml
-messaging-service: ${LUCKPERMS_MESSAGING_SERVICE:-auto}
-```
-
-with:
-
-```yaml
-messaging-service: sql
-```
-
-Then replace every remaining `${LUCKPERMS_...}` placeholder in the `redis:`, `nats:`, and `rabbitmq:` blocks with stock values:
-
-```yaml
-redis:
-  enabled: false
-  address: localhost
-  username: ""
-  password: ""
-  sentinel:
-    enabled: false
-    master: mymaster
-    addresses:
-      - localhost:26379
-    username: ""
-    password: ""
-nats:
-  enabled: false
-  address: localhost:4222
-  username: ""
-  password: ""
-  token: ""
-rabbitmq:
-  enabled: false
-  address: localhost:5672
-  vhost: "/"
-  username: guest
-  password: guest
-```
-
-Verify none remain:
+Verify — no placeholders left, CRLF intact, and the upstream comments still present:
 
 ```bash
 grep -c '\${LUCKPERMS' src/velocity/server/plugins/luckperms/config.yml
+printf 'CR=%s LF=%s\n' \
+  "$(tr -cd '\r' < src/velocity/server/plugins/luckperms/config.yml | wc -c)" \
+  "$(tr -cd '\n' < src/velocity/server/plugins/luckperms/config.yml | wc -c)"
+grep -c '^#' src/velocity/server/plugins/luckperms/config.yml
+git diff --stat src/velocity/server/plugins/luckperms/config.yml
 ```
 
-Expected: `0`.
+Expected: `0` placeholders; CR and LF equal and **3 higher than 623** (626/626) because
+the inserted note adds three lines; the `^#` comment count **increases by exactly 3**
+for the same reason and no upstream comment is lost; and the diff shows roughly 22
+changed lines, not 600. A diff of several hundred lines means the whole file was
+rewritten with the wrong line endings — revert and use perl.
+
+Also confirm the `sentinel:` sub-block is untouched, since it never held placeholders:
+
+```bash
+grep -A6 '  sentinel:' src/velocity/server/plugins/luckperms/config.yml
+```
+
+Expected: `enabled: false`, `master: mymaster`, `addresses:`, `- localhost:26379`,
+`username: ""`, `password: ""` — exactly as before.
 
 - [ ] **Step 3: Apply the seeding policy to the Velocity entrypoint**
 
