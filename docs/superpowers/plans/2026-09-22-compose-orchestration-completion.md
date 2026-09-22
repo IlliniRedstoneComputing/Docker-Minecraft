@@ -1861,7 +1861,7 @@ git commit -m "fix: seed survival config without clobbering admin edits"
 
 ---
 
-: Lobby and onboarding entrypoints
+## Task 9: Lobby and onboarding entrypoints
 
 **Files:**
 - Modify: `src/lobby/entrypoint.sh`
@@ -2995,7 +2995,7 @@ git commit -m "test: add a runner for the full suite"
 
 ---
 
-: Reconcile the documentation
+## Task 18: Reconcile the documentation
 
 **Files:**
 - Modify: `docs/api.md`
