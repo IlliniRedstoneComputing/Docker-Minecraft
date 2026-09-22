@@ -90,8 +90,15 @@ rm -f /data/mods/*.jar
 cp -a /usr/src/init_data/mods/. /data/mods/
 
 # Admin-editable over WebDAV: seeded only when absent so edits survive restarts.
+#
+# --update=none rather than -n: coreutils 9.x warns that "behavior of -n is
+# non-portable and may change in future", and this flag is the entire
+# load-bearing mechanism of the seed-if-absent policy -- not somewhere to rely
+# on a spelling upstream has reserved the right to redefine. Verified
+# equivalent in this image (coreutils 9.4): an edited file is preserved, a
+# missing one is copied, and no warning is emitted.
 mkdir -p /data/config
-cp -a -n /usr/src/init_data/config/. /data/config/
+cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
 
 # world/ is deliberately never touched here. This server's world is

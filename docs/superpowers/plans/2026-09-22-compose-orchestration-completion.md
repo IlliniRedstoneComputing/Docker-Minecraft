@@ -1857,8 +1857,15 @@ rm -f /data/mods/*.jar
 cp -a /usr/src/init_data/mods/. /data/mods/
 
 # Admin-editable over WebDAV: seeded only when absent so edits survive restarts.
+#
+# --update=none rather than -n: coreutils 9.x warns that "behavior of -n is
+# non-portable and may change in future", and this flag is the entire
+# load-bearing mechanism of the seed-if-absent policy -- not somewhere to rely
+# on a spelling upstream has reserved the right to redefine. Verified
+# equivalent in this image (coreutils 9.4): an edited file is preserved, a
+# missing one is copied, and no warning is emitted.
 mkdir -p /data/config
-cp -a -n /usr/src/init_data/config/. /data/config/
+cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
 
 # world/ is deliberately never touched here. This server's world is
@@ -1876,13 +1883,35 @@ exec "/image/scripts/start"
 ```bash
 docker compose up -d --build survival
 sleep 60
-docker compose exec survival sh -c 'echo "# edited" >> /data/config/FabricProxy-Lite.toml'
+docker compose exec survival sh -c 'sed -i "s|^disconnectMessage = .*|disconnectMessage = \"ADMIN_EDIT_PROBE\"|" /data/config/FabricProxy-Lite.toml'
+docker compose exec survival sh -c 'echo "adminonly = true" > /data/config/zz-admin-probe.toml'
 docker compose restart survival
-sleep 60
-docker compose exec survival grep -c '# edited' /data/config/FabricProxy-Lite.toml
+sleep 75
+docker compose exec survival sh -c 'grep "^disconnectMessage" /data/config/FabricProxy-Lite.toml'
+docker compose exec survival sh -c 'cat /data/config/zz-admin-probe.toml 2>/dev/null || echo GONE'
 ```
 
-Expected: `1`. Before this change the edit would have been reverted to `0`.
+Expected: `disconnectMessage = "ADMIN_EDIT_PROBE"` and `adminonly = true`. Before this
+change the unconditional `cp -a` would have reverted both.
+
+**Probe with a value edit and a new file, never an appended comment.**
+`FabricProxy-Lite` owns this TOML and rewrites it through night-config on load and again
+at JVM shutdown, which discards comments. An appended `# edited` line therefore vanishes
+within about ten seconds of boot no matter what the entrypoint does, and tells you
+nothing about the seeding policy. An earlier draft of this step used exactly that probe
+and read its failure as a policy failure.
+
+If the result ever looks ambiguous, compare byte shapes. The image's rendered copy is
+CRLF with no trailing newline (172 bytes, CR=4 LF=4); the live file after the mod has
+loaded is LF-only with one (169 bytes, CR=0 LF=5). `cp -a` copies bytes verbatim and
+cannot perform that conversion, so an LF-only live file proves the mod wrote it and the
+entrypoint did not.
+
+Restore the probe state so the volume is left clean:
+
+```bash
+docker compose exec survival sh -c 'sed -i "s|^disconnectMessage = .*|disconnectMessage = \"This server requires you to connect with Velocity.\"|" /data/config/FabricProxy-Lite.toml; rm -f /data/config/zz-admin-probe.toml'
+```
 
 - [ ] **Step 5: Verify mods are still re-synced**
 
@@ -2035,8 +2064,15 @@ mkdir -p /data/world
 cp -a /usr/src/init_data/world/. /data/world/
 
 # Admin-editable over WebDAV: seeded only when absent so edits survive restarts.
+#
+# --update=none rather than -n: coreutils 9.x warns that "behavior of -n is
+# non-portable and may change in future", and this flag is the entire
+# load-bearing mechanism of the seed-if-absent policy -- not somewhere to rely
+# on a spelling upstream has reserved the right to redefine. Verified
+# equivalent in this image (coreutils 9.4): an edited file is preserved, a
+# missing one is copied, and no warning is emitted.
 mkdir -p /data/config
-cp -a -n /usr/src/init_data/config/. /data/config/
+cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
 
 echo "Initialization complete. Starting server..."
@@ -2196,8 +2232,15 @@ rm -f /data/mods/*.jar
 cp -a /usr/src/init_data/mods/. /data/mods/
 
 # Admin-editable over WebDAV: seeded only when absent so edits survive restarts.
+#
+# --update=none rather than -n: coreutils 9.x warns that "behavior of -n is
+# non-portable and may change in future", and this flag is the entire
+# load-bearing mechanism of the seed-if-absent policy -- not somewhere to rely
+# on a spelling upstream has reserved the right to redefine. Verified
+# equivalent in this image (coreutils 9.4): an edited file is preserved, a
+# missing one is copied, and no warning is emitted.
 mkdir -p /data/config
-cp -a -n /usr/src/init_data/config/. /data/config/
+cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
 
 # world/ is deliberately never touched here. This server's world is
@@ -3093,6 +3136,33 @@ git commit -m "test: add a runner for the full suite"
 **Files:**
 - Modify: `docs/api.md`
 - Modify: `README.md`
+
+- [ ] **Step 0: Document that mod-owned configs discard WebDAV edits**
+
+Found during Task 8. The durability table in `docs/api.md` treats everything under
+`/data/config` as admin-editable and durable, but that is only true of files no running
+mod owns.
+
+`FabricProxy-Lite` parses its TOML through night-config and **writes the file back** —
+on load, and again at JVM shutdown. Two consequences a remote administration service
+must handle:
+
+- **Comments do not survive.** An appended `# comment` is gone within about ten seconds
+  of boot. Verified: the image's rendered copy is CRLF with no trailing newline (172
+  bytes); the live file after the mod loads is LF-only with one (169 bytes) — a
+  conversion `cp -a` cannot perform, so the mod is provably the writer.
+- **Edits made while the server is running are silently discarded at shutdown**, because
+  the mod serializes its in-memory state over whatever is on disk. Only edits made while
+  the server is stopped, or applied through the game, are safe.
+
+Value edits made while stopped *do* persist — verified with `disconnectMessage` across a
+restart, alongside a brand-new `zz-admin-probe.toml`, which also survived.
+
+Add a row or note to the durability table in `docs/api.md` distinguishing
+**mod-owned configs** (`config/FabricProxy-Lite.toml`, and any other file a loaded mod
+rewrites) from **inert configs** the server only reads. Recommend that the administration
+service stop the target server before editing a mod-owned file, and never rely on
+comments as a carrier for anything.
 
 - [ ] **Step 1: Resolve the unverified context note**
 
