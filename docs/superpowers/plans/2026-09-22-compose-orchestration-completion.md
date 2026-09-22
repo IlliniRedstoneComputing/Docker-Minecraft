@@ -527,7 +527,10 @@ assert_not_contains "$WEBDAV" "minecraft-network" "webdav is not on the minecraf
 # files it creates as root cannot be rewritten in place by the Minecraft
 # servers, which run as uid 1000.
 assert_contains "$WEBDAV" "read_only: true" "the config mount is read-only"
-assert_contains "$WEBDAV" "user: \"1000:1000\"" "webdav does not run as root"
+# Unquoted needle on purpose: compose.yml writes user: "1000:1000", but the
+# renderer's YAML dumper drops quotes from unambiguous scalars and emits
+# user: 1000:1000. A quoted needle can never match.
+assert_contains "$WEBDAV" "user: 1000:1000" "webdav does not run as root"
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
