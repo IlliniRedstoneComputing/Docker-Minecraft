@@ -384,6 +384,7 @@ git commit -m "test: add compose validation harness and fix blocking compose err
 **Files:**
 - Modify: `compose.yml`
 - Delete: `wg0.conf.example`
+- Modify: `.gitignore`
 - Modify: `tests/test-compose-config.sh`
 
 - [ ] **Step 1: Add failing assertions for the cleanup**
