@@ -1853,6 +1853,17 @@ echo "Injecting secrets..."
 # FabricProxy-Lite has no environment-variable support, so it is templated.
 # luckperms.conf is NOT templated: its connection settings come from
 # LUCKPERMS_* variables, which LuckPerms resolves ahead of the file.
+#
+# ROTATION CAVEAT. This renders the IMAGE's copy. FabricProxy-Lite.toml is both
+# secret-bearing and admin-editable, and the seeding below resolves that
+# conflict in favour of admin-editable -- so on a volume that has already
+# booted, a rotated VELOCITY_SECRET never reaches /data/config. velocity's own
+# forwarding.secret IS re-copied unconditionally, so after a rotation the proxy
+# moves to the new secret while every Fabric backend keeps the old one, and the
+# only symptom is backends refusing connections.
+#
+# To rotate: change VELOCITY_SECRET, delete /data/config/FabricProxy-Lite.toml
+# on every backend, then recreate the containers.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
 
 echo "Secrets injected successfully."
@@ -1985,12 +1996,26 @@ which would have left the unrendered-config-copy fix uncommitted.
 
 These two repositories currently share a byte-identical entrypoint that injects the Velocity secret with `sed`, which silently corrupts any secret containing `/`, `&`, or `\`. They also copy `world/` unconditionally — **which is correct and must be preserved**, because those worlds are code artifacts.
 
-**Line endings:** every `entrypoint.sh` in this repository is LF-only, enforced by the
-`*.sh text eol=lf` rule in `.gitattributes`, so these two files need no CRLF handling —
-write them as LF and verify with `tr -cd '\r' < file | wc -c` returning `0`. Do not
-generalize that to other files: the Dockerfiles are genuinely mixed (`lobby` 24/24 and
-`onboarding` 29/29 are CRLF, while `survival`, `project-0` and `project-1` are LF-only),
-and the `luckperms.conf` files are CRLF at 684/684. This task touches neither.
+**Line endings:** both `entrypoint.sh` files are LF-only today (`CR=0 LF=19`), and
+writing them as LF keeps them that way — but **not** because of `.gitattributes`. These
+are separate repositories: the parent's `*.sh text eol=lf` rule does not reach inside a
+submodule, and neither `src/lobby` nor `src/onboarding` carries a `.gitattributes` of
+its own. Verified — `git -C src/lobby check-attr text eol -- entrypoint.sh` reports both
+attributes as `unspecified`. What actually holds the line is `core.autocrlf=false`
+(parent, submodule and global alike) plus the files already being LF in the index.
+Verify after writing with `tr -cd '\r' < file | wc -c` returning `0`. Do not generalize
+that to other files: the Dockerfiles are genuinely mixed (`lobby` 24/24 and `onboarding`
+29/29 are CRLF, while `survival`, `project-0` and `project-1` are LF-only), and the
+`luckperms.conf` files are CRLF at 684/684. This task touches neither.
+
+**`set -euo pipefail` here, `set -e` in the siblings.** The divergence is deliberate
+rather than an oversight: `survival`, `velocity` and `mchprs` were written and reviewed
+with `set -e` and are not in scope for this task. `-u` is safe in this function — bash
+leaves an unmatched optional group in `BASH_REMATCH` as an empty string, not unset, so
+`${BASH_REMATCH[3]}` does not abort on `${VELOCITY_SECRET}`, which carries no
+`:-default` clause. Verified inside `irc-minecraft-lobby:latest` (bash 5.2.21, coreutils
+9.4): the match reports `n=4 g1=[VELOCITY_SECRET] g3=[]`. Harmonizing the other three is
+left to Task 19.
 
 - [ ] **Step 1: Branch both submodules**
 
@@ -2074,6 +2099,17 @@ echo "Injecting secrets..."
 # FabricProxy-Lite has no environment-variable support, so it is templated.
 # luckperms.conf is NOT templated: its connection settings come from
 # LUCKPERMS_* variables, which LuckPerms resolves ahead of the file.
+#
+# ROTATION CAVEAT. This renders the IMAGE's copy. FabricProxy-Lite.toml is both
+# secret-bearing and admin-editable, and the seeding below resolves that
+# conflict in favour of admin-editable -- so on a volume that has already
+# booted, a rotated VELOCITY_SECRET never reaches /data/config. velocity's own
+# forwarding.secret IS re-copied unconditionally, so after a rotation the proxy
+# moves to the new secret while every Fabric backend keeps the old one, and the
+# only symptom is backends refusing connections.
+#
+# To rotate: change VELOCITY_SECRET, delete /data/config/FabricProxy-Lite.toml
+# on every backend, then recreate the containers.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
 
 echo "Secrets injected successfully."
@@ -2097,6 +2133,15 @@ cp -a /usr/src/init_data/mods/. /data/mods/
 # Image-controlled BY DESIGN. This server's world is a code artifact: builders
 # publish a new design by rebuilding the image, and players are in adventure
 # mode and cannot modify blocks. Do not convert this to seed-if-absent.
+#
+# This is a MERGE, not a replace: cp overwrites what the image ships and leaves
+# everything else alone, so a region file the image no longer carries survives
+# in the volume -- whether a builder deleted that part of the build or the
+# running server generated chunks past the published edge. Clearing /data/world
+# first would fix that and must NOT be done here: onboarding's image world is an
+# empty directory holding only .gitkeep, so the only copy of its world is the
+# one the server generated in the volume, and a delete-first sync would destroy
+# it on the next restart.
 mkdir -p /data/world
 cp -a /usr/src/init_data/world/. /data/world/
 
@@ -2252,6 +2297,17 @@ echo "Injecting secrets..."
 # FabricProxy-Lite has no environment-variable support, so it is templated.
 # luckperms.conf is NOT templated: its connection settings come from
 # LUCKPERMS_* variables, which LuckPerms resolves ahead of the file.
+#
+# ROTATION CAVEAT. This renders the IMAGE's copy. FabricProxy-Lite.toml is both
+# secret-bearing and admin-editable, and the seeding below resolves that
+# conflict in favour of admin-editable -- so on a volume that has already
+# booted, a rotated VELOCITY_SECRET never reaches /data/config. velocity's own
+# forwarding.secret IS re-copied unconditionally, so after a rotation the proxy
+# moves to the new secret while every Fabric backend keeps the old one, and the
+# only symptom is backends refusing connections.
+#
+# To rotate: change VELOCITY_SECRET, delete /data/config/FabricProxy-Lite.toml
+# on every backend, then recreate the containers.
 render_env_placeholders "$CONFIG_DIR/FabricProxy-Lite.toml"
 
 echo "Secrets injected successfully."
