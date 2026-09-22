@@ -1793,7 +1793,40 @@ docker compose -f compose.yml exec -T survival grep '^secret' /data/config/Fabri
 Expected: `0` AccessDenied warnings, and `secret = "velocity_secret"` — matching
 `VELOCITY_SECRET` in `.env`, not the literal `${VELOCITY_SECRET}`.
 
-- [ ] **Step 2: Apply the seeding policy**
+- [ ] **Step 2: Fix the trailing-newline loss in `render_env_placeholders`**
+
+`src/survival/entrypoint.sh` carries its own copy of the same function fixed in Task 7,
+with the same defect. It reads the file with `content=$(cat "$file")` and writes it back
+with `printf '%s'`. Command substitution strips **every** trailing newline and
+`printf '%s'` does not restore one, so rendering a file silently drops its final line
+terminator — measured at 14 bytes in, 12 out, CR 2→1 and LF 2→1 on a two-line CRLF
+fixture.
+
+This function renders `FabricProxy-Lite.toml`, which carries the Velocity forwarding
+secret. That file happens to end without a trailing newline today (CR=4 LF=4 across five
+lines), so nothing is being lost right now — but a stray byte difference in the secret
+file between the proxy and a backend breaks forwarding authentication in a way that is
+very hard to diagnose, so the latent bug is not one to leave in place.
+
+In `src/survival/entrypoint.sh` (LF-only — keep it LF), replace:
+
+```bash
+  content=$(cat "$file")
+```
+
+with:
+
+```bash
+  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
+  # $(cat file) strips every trailing newline and `printf '%s'` does not put
+  # one back, so rendering a CRLF file silently drops its final CRLF --
+  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
+  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
+  # sed, caused here by the function written to replace sed.
+  content=$(cat "$file"; printf x); content="${content%x}"
+```
+
+- [ ] **Step 3: Apply the seeding policy**
 
 In `src/survival/entrypoint.sh`, replace everything from the line `echo "Injecting secrets..."` to the end of the file with:
 
@@ -1809,8 +1842,18 @@ echo "Secrets injected successfully."
 
 echo "Seeding /data..."
 
-# Image-controlled: always re-synced so mod upgrades actually land.
+# Image-controlled: the image owns the mod set, so a mod dropped into
+# /data/mods by hand is removed rather than merely shadowed.
+#
+# Clearing the jars first is what makes an UPGRADE work. Mod filenames carry
+# the version, so a bump is a rename, and copying without deleting leaves BOTH
+# jars in /data/mods -- which Fabric refuses to start on, as duplicate mod ids.
+# Verified on a fixture: renaming fabric-api-0.136.1+1.21.8.jar to
+# fabric-api-0.137.0+1.21.8.jar in the image and re-running the copy alone
+# yields both. The glob is top-level only, so any per-mod state directory
+# under /data/mods survives.
 mkdir -p /data/mods
+rm -f /data/mods/*.jar
 cp -a /usr/src/init_data/mods/. /data/mods/
 
 # Admin-editable over WebDAV: seeded only when absent so edits survive restarts.
@@ -1828,7 +1871,7 @@ echo "Initialization complete. Starting server..."
 exec "/image/scripts/start"
 ```
 
-- [ ] **Step 3: Verify config edits now survive a restart**
+- [ ] **Step 4: Verify config edits now survive a restart**
 
 ```bash
 docker compose up -d --build survival
@@ -1841,7 +1884,7 @@ docker compose exec survival grep -c '# edited' /data/config/FabricProxy-Lite.to
 
 Expected: `1`. Before this change the edit would have been reverted to `0`.
 
-- [ ] **Step 4: Verify mods are still re-synced**
+- [ ] **Step 5: Verify mods are still re-synced**
 
 ```bash
 docker compose exec survival sh -c 'rm -f /data/mods/spark-1.10.142-fabric.jar'
@@ -1852,12 +1895,30 @@ docker compose exec survival sh -c 'ls /data/mods/spark-1.10.142-fabric.jar'
 
 Expected: the path is listed — the image restored it.
 
-- [ ] **Step 5: Commit**
+Then verify the other half, that a jar the image does **not** ship is removed rather than
+left to accumulate. This is what makes an upgrade work, since a version bump is a rename:
 
 ```bash
-git add src/survival/entrypoint.sh
+docker compose exec survival sh -c 'touch /data/mods/stale-mod-0.0.1.jar'
+docker compose restart survival
+sleep 60
+docker compose exec survival sh -c 'ls /data/mods/stale-mod-0.0.1.jar 2>/dev/null || echo REMOVED'
+docker compose exec survival sh -c 'ls -1 /data/mods/*.jar | wc -l'
+```
+
+Expected: `REMOVED`, and a jar count of `8` — matching `src/survival/server/mods/`
+exactly. If the stale jar survives, the `rm -f` line is missing and a future mod upgrade
+will leave two versions of the same mod in place, which Fabric refuses to start on.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/survival/Dockerfile src/survival/entrypoint.sh
 git commit -m "fix: seed survival config without clobbering admin edits"
 ```
+
+Note the `Dockerfile` — Step 1 modifies it, and an earlier draft of this step omitted it,
+which would have left the unrendered-config-copy fix uncommitted.
 
 ---
 
@@ -1912,7 +1973,13 @@ CONFIG_DIR="/usr/src/init_data/config"
 render_env_placeholders() {
   local file="$1" content result pattern full varname default value
 
-  content=$(cat "$file")
+  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
+  # $(cat file) strips every trailing newline and `printf '%s'` does not put
+  # one back, so rendering a CRLF file silently drops its final CRLF --
+  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
+  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
+  # sed, caused here by the function written to replace sed.
+  content=$(cat "$file"; printf x); content="${content%x}"
   result=""
   # Matches ${NAME} or ${NAME:-default}. The default text may be empty
   # (${NAME:-}) but cannot itself contain a literal '}'.
@@ -1947,8 +2014,18 @@ echo "Secrets injected successfully."
 
 echo "Seeding /data..."
 
-# Image-controlled: always re-synced so mod upgrades actually land.
+# Image-controlled: the image owns the mod set, so a mod dropped into
+# /data/mods by hand is removed rather than merely shadowed.
+#
+# Clearing the jars first is what makes an UPGRADE work. Mod filenames carry
+# the version, so a bump is a rename, and copying without deleting leaves BOTH
+# jars in /data/mods -- which Fabric refuses to start on, as duplicate mod ids.
+# Verified on a fixture: renaming fabric-api-0.136.1+1.21.8.jar to
+# fabric-api-0.137.0+1.21.8.jar in the image and re-running the copy alone
+# yields both. The glob is top-level only, so any per-mod state directory
+# under /data/mods survives.
 mkdir -p /data/mods
+rm -f /data/mods/*.jar
 cp -a /usr/src/init_data/mods/. /data/mods/
 
 # Image-controlled BY DESIGN. This server's world is a code artifact: builders
@@ -2063,7 +2140,13 @@ CONFIG_DIR="/usr/src/init_data/config"
 render_env_placeholders() {
   local file="$1" content result pattern full varname default value
 
-  content=$(cat "$file")
+  # The `; printf x` / `%x` dance preserves trailing newlines. A bare
+  # $(cat file) strips every trailing newline and `printf '%s'` does not put
+  # one back, so rendering a CRLF file silently drops its final CRLF --
+  # measured at 14 bytes in, 12 out, CR 2->1 and LF 2->1 on a two-line
+  # fixture. That is the same mixed-ending damage AGENTS.md warns about for
+  # sed, caused here by the function written to replace sed.
+  content=$(cat "$file"; printf x); content="${content%x}"
   result=""
   # Matches ${NAME} or ${NAME:-default}. The default text may be empty
   # (${NAME:-}) but cannot itself contain a literal '}'.
@@ -2098,8 +2181,18 @@ echo "Secrets injected successfully."
 
 echo "Seeding /data..."
 
-# Image-controlled: always re-synced so mod upgrades actually land.
+# Image-controlled: the image owns the mod set, so a mod dropped into
+# /data/mods by hand is removed rather than merely shadowed.
+#
+# Clearing the jars first is what makes an UPGRADE work. Mod filenames carry
+# the version, so a bump is a rename, and copying without deleting leaves BOTH
+# jars in /data/mods -- which Fabric refuses to start on, as duplicate mod ids.
+# Verified on a fixture: renaming fabric-api-0.136.1+1.21.8.jar to
+# fabric-api-0.137.0+1.21.8.jar in the image and re-running the copy alone
+# yields both. The glob is top-level only, so any per-mod state directory
+# under /data/mods survives.
 mkdir -p /data/mods
+rm -f /data/mods/*.jar
 cp -a /usr/src/init_data/mods/. /data/mods/
 
 # Admin-editable over WebDAV: seeded only when absent so edits survive restarts.
