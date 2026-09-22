@@ -76,7 +76,11 @@ assert_contains "$VELOCITY" "restart: unless-stopped" "velocity has a restart po
 # reports {"healthy":true,...}, so inheriting it leaves the container forever
 # unhealthy and luckperms-init never starts.
 LPSA=$(service_block luckperms-standalone "$CONFIG")
-assert_contains "$LPSA" "healthy" "luckperms healthcheck matches the real schema"
+# The needle is the full '"healthy":true' string, not a bare "healthy". The
+# service block also contains `condition: service_healthy` from its depends_on
+# clause, so a bare needle matches that instead and passes no matter what the
+# healthcheck command actually greps for.
+assert_contains "$LPSA" '"healthy":true' "luckperms healthcheck matches the real schema"
 assert_not_contains "$LPSA" '"up":true' "luckperms healthcheck does not use the broken needle"
 
 # Dead services and volumes must be gone. BOTH are checked against the raw
