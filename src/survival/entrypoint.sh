@@ -129,8 +129,9 @@ cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
 
 # world/ is deliberately never touched here. This server's world is
-# player-owned state. Contrast with lobby and onboarding, whose worlds are
-# code artifacts re-synced from the image on every start.
+# player-owned state. Contrast with lobby, whose world is a code artifact
+# re-synced from the image on every start -- and see AGENTS.md item 4 for why
+# onboarding follows that same policy without yet being in that state.
 
 echo "Initialization complete. Starting server..."
 

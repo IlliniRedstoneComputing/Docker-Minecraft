@@ -1901,8 +1901,9 @@ cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
 
 # world/ is deliberately never touched here. This server's world is
-# player-owned state. Contrast with lobby and onboarding, whose worlds are
-# code artifacts re-synced from the image on every start.
+# player-owned state. Contrast with lobby, whose world is a code artifact
+# re-synced from the image on every start -- and see AGENTS.md item 4 for why
+# onboarding follows that same policy without yet being in that state.
 
 echo "Initialization complete. Starting server..."
 
@@ -2161,8 +2162,10 @@ cp -a /usr/src/init_data/mods/. /data/mods/
 # mkdir -p runs as root, and it is the cp -a below that resets this directory's
 # owner to minecraft from the image copy. Dropping that cp -- it looks like a
 # no-op on onboarding, which copies only .gitkeep -- would leave /data/world
-# root-owned and unwritable by the server, because itzg's start script chowns
-# /data only when its owner differs from $UID.
+# root-owned and unwritable by the server on any boot AFTER THE FIRST, because
+# itzg's start script chowns /data only when /data's own owner differs from
+# $UID. On a fresh volume that chown still fires and masks the problem, which
+# is what would make it a nasty one to diagnose.
 mkdir -p /data/world
 cp -a /usr/src/init_data/world/. /data/world/
 
@@ -2234,7 +2237,7 @@ cd ../..
 - Modify: `src/project-0/entrypoint.sh`
 - Modify: `src/project-1/entrypoint.sh`
 
-These two repositories share a byte-identical entrypoint. Unlike lobby and onboarding they ship no `world/` directory, and their worlds are player-owned and must never be overwritten.
+These two repositories share a byte-identical entrypoint. Unlike lobby and onboarding they seed no `world/` at all, and their worlds are player-owned and must never be overwritten.
 
 - [ ] **Step 1: Branch both submodules**
 

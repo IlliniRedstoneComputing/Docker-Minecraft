@@ -88,8 +88,10 @@ These exist to prevent well-intentioned changes that would break things.
 
 `backup` archives **only `survival`, `project-0`, and `project-1`**. This is deliberate.
 
-- **`lobby` and `onboarding` are excluded** because their worlds are defined in code, not
-  accumulated through play. Lobby players are in adventure mode and cannot modify blocks;
+- **`lobby` and `onboarding` are excluded** because `lobby`'s world is defined in code
+  rather than accumulated through play — and, for `onboarding`, on a premise that turned
+  out not to hold; see the caveat below.
+  Lobby players are in adventure mode and cannot modify blocks;
   the lobby only changes when builders publish a new design, which happens by rebuilding
   the image. Its world is restored from the image on every start, so a backup would only
   duplicate what git already holds.
@@ -113,11 +115,17 @@ path is image-controlled or admin-controlled:
 | `config/`, `server.properties` | seeded only if absent, so edits persist |
 | `velocity.toml` | seeded only if absent, so backend servers can be added |
 | `forwarding.secret` | always rewritten, so secret rotation propagates |
-| `world/` — `lobby`, `onboarding` | re-synced every start; the world is a code artifact |
+| `world/` — `lobby` | re-synced every start; the world is a code artifact |
+| `world/` — `onboarding` | re-synced every start **in policy only** — the image ships an empty world, so in practice nothing overwrites it and nothing backs it up |
 | `world/` — `survival`, `project-*`, `mchprs` | never touched; player-owned state |
 
 Anything in the "seeded only if absent" rows can be edited durably over WebDAV. Anything
 re-synced every start cannot — change it in the image instead.
+
+**`onboarding/world/` is the exception to that rule, and the dangerous one.** The policy
+says re-synced, so the sentence above would have you treat it as disposable, but nothing
+re-syncs it: the volume holds the only copy, in neither git nor the backup set. Treat it
+as durable until the open question in item 5 of [`AGENTS.md`](AGENTS.md) is settled.
 
 ### Permissions are defined in code
 

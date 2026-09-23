@@ -237,8 +237,10 @@ The `world/` policy is per-role, not global:
 | `lobby`, `onboarding` | re-sync every start | The world is a **code artifact**. Builders publish a new design by rebuilding the image; lobby players are in adventure mode and cannot modify blocks. The image is authoritative by intent. **As built, only `lobby` matches this** — `onboarding` ships an empty `server/world` and runs `gamemode=survival`, so its world is volume-only. See `AGENTS.md` items 4 and 5. |
 | `survival`, `project-0`, `project-1`, `mchprs` | never touched after first boot | Player-owned state. |
 
-This is why `lobby` and `onboarding` ship a `world/` directory in git and copy it
-unconditionally: that is correct behavior, not the data-loss bug it resembles.
+This is why `lobby` ships a `world/` directory in git and copies it unconditionally:
+that is correct behavior, not the data-loss bug it resembles. `onboarding` follows the
+same policy but ships only a `.gitkeep`, so the copy moves no world data and its live
+world is volume-only — see `AGENTS.md` items 4 and 5.
 
 Velocity specifically:
 
@@ -447,7 +449,7 @@ Initially reported, then disproved against upstream sources. **Do not "fix" thes
 | `velocity` has no healthcheck, so `service_healthy` dependencies fail | `itzg/mc-proxy` declares `HEALTHCHECK --start-period=10s CMD /usr/bin/health.sh`. `HEALTHCHECK` is inherited unless explicitly overridden, and `src/velocity/Dockerfile` overrides only `CMD`. `health.sh` reads `.bind` from `velocity.toml` in WORKDIR `/server` — where the entrypoint places it — resolving port 25565. |
 | mchprs is missing `:3306` on `LUCKPERMS_DATA_ADDRESS` | MCHPRS passes `host` to `OptsBuilder::ip_or_hostname()`, which takes a hostname only and defaults the port. The bare `luckperms-db` is correct; adding `:3306` would break it. |
 | `lobby` and `onboarding` clobber the live world on every restart | Intentional. Those worlds are code artifacts: builders publish a new design by rebuilding the image, and lobby players are in adventure mode and cannot modify blocks. The image is authoritative by design. This is also why neither is backed up. Caveat found later: only `lobby` is actually in that state — `onboarding` ships an empty world and runs survival, so nothing restores or backs up its world. Recorded as an open question in `AGENTS.md` item 5. |
-| `backup` is missing `lobby`, `onboarding`, `mchprs`, and `velocity` | Intentional. Only `survival`, `project-0`, and `project-1` accrue state over time. The lobby and onboarding worlds live in git; `velocity` and `mchprs` hold no durable state. |
+| `backup` is missing `lobby`, `onboarding`, `mchprs`, and `velocity` | Intentional. Only `survival`, `project-0`, and `project-1` accrue state over time. The lobby world lives in git; `velocity` and `mchprs` hold no durable state. **The `onboarding` half of this was disproved later:** its world does *not* live in git, so nothing restores it and nothing backs it up. That is an open maintainer decision, recorded in `AGENTS.md` item 5 — do not treat this row as settling it. |
 
 ## References
 

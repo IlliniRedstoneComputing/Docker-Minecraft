@@ -72,7 +72,9 @@ state:
   the overwrite costs nothing.
 - `onboarding` ships an **empty** `server/world` holding only `.gitkeep`, and runs
   `gamemode=survival`. Its live world is whatever the server generated in the volume,
-  that is the only copy, and the overwrite is a no-op today. Committing a world into
+  that is the only copy, and the overwrite moves no world data today. It is not dead
+  code, though: the `cp` is what leaves `/data/world` owned by `minecraft`, as the
+  entrypoint comment explains. Committing a world into
   `src/onboarding/server/world` would begin overwriting player-modified chunks on every
   restart. Settle the open question in item 5 first.
 
