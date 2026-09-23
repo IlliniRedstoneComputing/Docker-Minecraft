@@ -45,11 +45,12 @@ The override must therefore grep `"healthy":true`. Do not "correct" the port to 
 `HEALTHCHECK` is inherited unless the derived Dockerfile declares its own, and
 `src/velocity/Dockerfile` declares none — which is the whole reason it is inherited.
 It is **not** a consequence of that Dockerfile overriding only `CMD`. Those are two
-independent facts and welding them into a causal link is a mistake this repository
-has already made twice: `lobby`, `onboarding` and `survival` all replace `ENTRYPOINT`
-outright and still report the base image's `mc-health` check. `health.sh` reads
-`.bind` from `velocity.toml` in WORKDIR
-`/server` — exactly where the entrypoint places it — and resolves port 25565.
+independent facts, and welding them into a causal link is a mistake this repository
+has already made twice. The disproof: `lobby`, `onboarding` and `survival` all
+replace `ENTRYPOINT` outright and still report the base image's `mc-health` check.
+
+`health.sh` reads `.bind` from `velocity.toml` in WORKDIR `/server` — exactly where
+the entrypoint places it — and resolves port 25565.
 
 `depends_on: velocity: {condition: service_healthy}` therefore works as written.
 

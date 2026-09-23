@@ -1607,9 +1607,9 @@ echo "Copying complete. Starting Velocity..."
 # The base image's HEALTHCHECK is inherited because this Dockerfile declares
 # none of its own. That holds however CMD or ENTRYPOINT are overridden -- it is
 # NOT a consequence of overriding CMD rather than ENTRYPOINT. Verified:
-# irc-minecraft-lobby and irc-minecraft-survival both REPLACE the entrypoint and
-# still report the base mc-health check. AGENTS.md item 2 states those two facts
-# side by side; do not read a causal link into it.
+# irc-minecraft-lobby, irc-minecraft-onboarding and irc-minecraft-survival all
+# REPLACE the entrypoint and still report the base mc-health check. AGENTS.md
+# item 2 spells this out.
 #
 # "$@" forwards anything appended at `docker run`, and expands to nothing when
 # there is nothing to forward.
@@ -3540,9 +3540,25 @@ This is that moment. Neither is a bug today.
    each for unguarded `$1`/`$@` expansions first — `mchprs` in particular has not
    been read with `-u` in mind.
 
+4. **`src/mchprs/entrypoint.sh` keeps the bare `content=$(cat "$file")` form**, where
+   the other six use the `&& printf x` sentinel. **Read the decline note under Task 8
+   before touching it** — this is deliberate, and the reasoning is not obvious from the
+   file. The bare form is a plain assignment, so the substitution's exit status *is*
+   the assignment's and `set -e` fires normally; only the `;`-sentinel variant broke
+   that. `src/mchprs/Config.toml` is LF-only (CR=0 LF=31) with no trailing newline, so
+   the sentinel would buy nothing there.
+
+   This matters because **item 3 above sends you into this exact file.** Someone
+   harmonizing `set -e` will see a `render_env_placeholders` visibly different from the
+   other six and be tempted to harmonize that too. If they reach for `;` rather than
+   `&&`, they reintroduce the bug the other six were fixed for: `printf`'s always-zero
+   status disarms `set -e`, and the function truncates a secret-bearing file to zero
+   bytes. Harmonize it only with `&&`, or leave it alone.
+
 ```bash
 grep -n 'CONFIG_DIR\|/usr/src/init_data' src/*/entrypoint.sh
 grep -H '^set ' src/*/entrypoint.sh
+grep -n 'content=$(cat' src/*/entrypoint.sh
 ```
 
 Expected, once all three items are closed: no single file both defines `CONFIG_DIR`

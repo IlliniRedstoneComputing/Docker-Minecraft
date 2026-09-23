@@ -82,10 +82,17 @@ These land first; nothing else is testable until they do.
    rewrite below.
 5. **`velocity` has no `restart:` policy** — the only service missing one. Add
    `restart: unless-stopped`.
-6. **Delete the `luckperms-standalone` healthcheck override.** It works, but it is a
-   weaker any-2xx check that shadows the stricter one the base image already declares
-   (`wget http://localhost:3001/health -q -O - | grep -c '"up":true'`). Removing the
-   override inherits the better check. See [Appendix B](#appendix-b--retracted-findings).
+6. ~~**Delete the `luckperms-standalone` healthcheck override.**~~ **RETRACTED — this
+   finding was wrong, it was acted on, and it caused a regression.** It is preserved
+   here only so the record shows what was believed at the time. The original reasoning
+   was that the override is a weaker any-2xx check shadowing the stricter one the base
+   image declares (`wget http://localhost:3001/health -q -O - | grep -c '"up":true'`),
+   so removing it would inherit the better check. **In fact the base image's check can
+   never pass**: this version's endpoint returns `{"healthy":true,...}`, not
+   `{"up":true,...}`, so inheriting it leaves the container permanently `unhealthy` and
+   `luckperms-init` never starts. The override must stay and must grep `"healthy":true`.
+   This is `AGENTS.md` item 1 — do not act on the struck-through text above. Full
+   evidence in [Appendix B](#appendix-b--retracted-findings).
 
 ### WebDAV
 

@@ -116,9 +116,9 @@ echo "Copying complete. Starting Velocity..."
 # The base image's HEALTHCHECK is inherited because this Dockerfile declares
 # none of its own. That holds however CMD or ENTRYPOINT are overridden -- it is
 # NOT a consequence of overriding CMD rather than ENTRYPOINT. Verified:
-# irc-minecraft-lobby and irc-minecraft-survival both REPLACE the entrypoint and
-# still report the base mc-health check. AGENTS.md item 2 states those two facts
-# side by side; do not read a causal link into it.
+# irc-minecraft-lobby, irc-minecraft-onboarding and irc-minecraft-survival all
+# REPLACE the entrypoint and still report the base mc-health check. AGENTS.md
+# item 2 spells this out.
 #
 # "$@" forwards anything appended at `docker run`, and expands to nothing when
 # there is nothing to forward.
