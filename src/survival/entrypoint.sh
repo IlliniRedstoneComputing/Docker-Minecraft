@@ -124,6 +124,10 @@ cp -a /usr/src/init_data/mods/. /data/mods/
 # on a spelling upstream has reserved the right to redefine. Verified
 # equivalent in this image (coreutils 9.4): an edited file is preserved, a
 # missing one is copied, and no warning is emitted.
+#
+# The policy has no removal story, and that is inherent rather than a bug:
+# seed-if-absent only ever adds, so a config file the image stops shipping stays
+# in /data/config forever. Retiring one means deleting it on each volume.
 mkdir -p /data/config
 cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
@@ -135,5 +139,14 @@ cp -a --update=none /usr/src/init_data/config/. /data/config/
 
 echo "Initialization complete. Starting server..."
 
-# This executes the CMD from your Dockerfile
-exec "/image/scripts/start"
+# Hand off to the base image's own entrypoint. itzg/minecraft-server declares
+# ENTRYPOINT ["/image/scripts/start"] and NO CMD (verified with docker image
+# inspect: Cmd=[]), and this server's Dockerfile replaces that ENTRYPOINT with
+# this script -- so nothing starts the server unless this line does.
+#
+# "$@" matters: /image/scripts/start ends in `exec ... start-configuration "$@"`,
+# so it forwards arguments onward. Dropping them here severs a path the base
+# image supports, and a CMD added to the Dockerfile, or arguments appended to
+# `docker run`, would be discarded in silence. Safe when empty -- bash does not
+# treat an unset "$@" as an unbound variable under `set -u`.
+exec /image/scripts/start "$@"

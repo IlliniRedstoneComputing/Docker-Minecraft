@@ -74,5 +74,8 @@ echo "Initialization complete. Starting server..."
 
 cd "/data"
 
-# This executes the CMD from your Dockerfile
-exec "/mchprs"
+# Hand off to the MCHPRS binary. There is no CMD anywhere in this image:
+# src/mchprs/Dockerfile copies the binary out of stackdoubleflow/mchprs onto an
+# alpine base and sets ENTRYPOINT to this script, so this line is the only thing
+# that starts the server. "$@" forwards anything appended at `docker run`.
+exec /mchprs "$@"

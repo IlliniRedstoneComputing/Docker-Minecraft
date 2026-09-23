@@ -107,5 +107,14 @@ cp -a "$CONFIG_DIR/forwarding.secret" /server/forwarding.secret
 
 echo "Copying complete. Starting Velocity..."
 
-# This executes the CMD from your Dockerfile
-exec "/usr/bin/run-bungeecord.sh"
+# Hand off to the base image's CMD. itzg/mc-proxy declares
+# ENTRYPOINT ["/__cacert_entrypoint.sh"] and CMD ["/usr/bin/run-bungeecord.sh"],
+# and src/velocity/Dockerfile overrides ONLY the CMD, with this script. So the
+# cacert entrypoint has already run and exec'd us, and this line resumes the
+# chain where that override interrupted it. Overriding CMD rather than
+# ENTRYPOINT is also why the base image's HEALTHCHECK is still inherited --
+# AGENTS.md item 2.
+#
+# "$@" forwards anything appended at `docker run`, and expands to nothing when
+# there is nothing to forward.
+exec /usr/bin/run-bungeecord.sh "$@"
