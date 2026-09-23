@@ -111,9 +111,14 @@ echo "Copying complete. Starting Velocity..."
 # ENTRYPOINT ["/__cacert_entrypoint.sh"] and CMD ["/usr/bin/run-bungeecord.sh"],
 # and src/velocity/Dockerfile overrides ONLY the CMD, with this script. So the
 # cacert entrypoint has already run and exec'd us, and this line resumes the
-# chain where that override interrupted it. Overriding CMD rather than
-# ENTRYPOINT is also why the base image's HEALTHCHECK is still inherited --
-# AGENTS.md item 2.
+# chain where that override interrupted it.
+#
+# The base image's HEALTHCHECK is inherited because this Dockerfile declares
+# none of its own. That holds however CMD or ENTRYPOINT are overridden -- it is
+# NOT a consequence of overriding CMD rather than ENTRYPOINT. Verified:
+# irc-minecraft-lobby and irc-minecraft-survival both REPLACE the entrypoint and
+# still report the base mc-health check. AGENTS.md item 2 states those two facts
+# side by side; do not read a causal link into it.
 #
 # "$@" forwards anything appended at `docker run`, and expands to nothing when
 # there is nothing to forward.

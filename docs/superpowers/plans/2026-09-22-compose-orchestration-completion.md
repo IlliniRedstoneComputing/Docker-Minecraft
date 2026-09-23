@@ -1602,12 +1602,17 @@ echo "Copying complete. Starting Velocity..."
 # ENTRYPOINT ["/__cacert_entrypoint.sh"] and CMD ["/usr/bin/run-bungeecord.sh"],
 # and src/velocity/Dockerfile overrides ONLY the CMD, with this script. So the
 # cacert entrypoint has already run and exec'd us, and this line resumes the
-# chain where that override interrupted it. Overriding CMD rather than
-# ENTRYPOINT is also why the base image's HEALTHCHECK is still inherited --
-# AGENTS.md item 2.
+# chain where that override interrupted it.
 #
-# "$@" forwards anything appended at `docker run`. Safe when empty -- bash does
-# not treat an unset "$@" as an unbound variable under `set -u`.
+# The base image's HEALTHCHECK is inherited because this Dockerfile declares
+# none of its own. That holds however CMD or ENTRYPOINT are overridden -- it is
+# NOT a consequence of overriding CMD rather than ENTRYPOINT. Verified:
+# irc-minecraft-lobby and irc-minecraft-survival both REPLACE the entrypoint and
+# still report the base mc-health check. AGENTS.md item 2 states those two facts
+# side by side; do not read a causal link into it.
+#
+# "$@" forwards anything appended at `docker run`, and expands to nothing when
+# there is nothing to forward.
 exec /usr/bin/run-bungeecord.sh "$@"
 ```
 
@@ -3498,6 +3503,34 @@ grep -n 'cp -a /usr/src/init_data/world' src/lobby/entrypoint.sh src/onboarding/
 ```
 
 Expected: one line in each — the intentional world re-sync is intact.
+
+- [ ] **Step 2b: Close the deferrals this plan accumulated**
+
+Two items were declined during Tasks 9 and 10 on the explicit grounds that they
+should change across the whole entrypoint family at once, rather than splitting it.
+This is that moment. Neither is a bug today.
+
+1. **`CONFIG_DIR` is used once while the same prefix is hardcoded three more times.**
+   In all five Fabric entrypoints, `CONFIG_DIR="/usr/src/init_data/config"` is used
+   only for the `render_env_placeholders` call, while the seeding lines spell out
+   `/usr/src/init_data/mods/.`, `/usr/src/init_data/config/.` and
+   `/usr/src/init_data/server.properties` literally. Change `CONFIG_DIR` and the
+   script renders a template at the new path while seeding from the old — shipping an
+   unrendered literal `${VELOCITY_SECRET}` into `/data/config` on a server running
+   `ONLINE_MODE=FALSE`, which surfaces only as backends refusing proxy connections.
+   `src/velocity/entrypoint.sh` already uses `$CONFIG_DIR` throughout and does not
+   have the split. Either introduce `INIT_DIR=/usr/src/init_data` and use it
+   everywhere, or drop the variable and hardcode the render call too.
+
+2. **Six of the seven entrypoints end without a trailing newline; `velocity` ends
+   with one.** Functionally irrelevant — bash executes an unterminated final line
+   — but it puts a permanent `\ No newline at end of file` marker on any future diff
+   touching the last line of six files. Normalize only if item 1 is being done
+   anyway, since that already rewrites the same files.
+
+```bash
+grep -n 'CONFIG_DIR\|/usr/src/init_data' src/*/entrypoint.sh
+```
 
 - [ ] **Step 3: Confirm the working tree and submodules are clean**
 
