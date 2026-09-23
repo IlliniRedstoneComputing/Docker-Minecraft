@@ -2159,9 +2159,13 @@ cp -a /usr/src/init_data/mods/. /data/mods/
 # This is a MERGE, not a replace: cp overwrites what the image ships and leaves
 # everything else alone, so a region file the image no longer carries survives
 # in the volume. Delete-first would fix that and is deliberately NOT done here:
-# it is a behavior change beyond this task, and it would have to stay safe for
-# onboarding, whose volume world is the only copy there is. Raise it as its own
-# change if orphaned region files start to matter.
+# it is only safe on a server whose image ships the world that server owns.
+# lobby qualifies. onboarding does not, and will not until a real world is
+# published into src/onboarding/server/world -- until then delete-first means
+# rm -rf /data/world followed by restoring a lone .gitkeep, so the server would
+# regenerate its world from scratch on every restart, which presents as a
+# corruption bug rather than as a policy. Revisit when that world is published,
+# or sooner if orphaned region files start to matter.
 #
 # mkdir -p runs as root, and it is the cp -a below that resets this directory's
 # owner to minecraft from the image copy. Dropping that cp -- it looks like a
