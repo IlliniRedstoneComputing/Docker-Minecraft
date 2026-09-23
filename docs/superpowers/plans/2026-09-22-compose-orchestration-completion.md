@@ -2149,15 +2149,19 @@ cp -a /usr/src/init_data/mods/. /data/mods/
 #     runs gamemode=adventure with force-gamemode=true, so players cannot
 #     modify blocks and overwriting costs nothing.
 #   - onboarding ships an EMPTY server/world holding only .gitkeep, and runs
-#     gamemode=survival. Its live world is whatever the server generated in the
-#     volume; that is the only copy, and the backup service does not cover it.
-#     Committing a world into src/onboarding/server/world would start
-#     overwriting player-modified chunks on every restart.
+#     gamemode=survival. Nothing re-syncs its world, so the volume holds the
+#     only copy -- a disposable placeholder, by maintainer decision recorded in
+#     AGENTS.md item 5, which is why it is not backed up. Publishing a real
+#     world into src/onboarding/server/world is the intended end state, and it
+#     makes this server the same case as lobby, including the part where the
+#     image overwrites whatever players changed.
 #
 # This is a MERGE, not a replace: cp overwrites what the image ships and leaves
 # everything else alone, so a region file the image no longer carries survives
-# in the volume. Clearing /data/world first would fix that and must NOT be done
-# here -- on onboarding it would destroy the only copy of the world.
+# in the volume. Delete-first would fix that and is deliberately NOT done here:
+# it is a behavior change beyond this task, and it would have to stay safe for
+# onboarding, whose volume world is the only copy there is. Raise it as its own
+# change if orphaned region files start to matter.
 #
 # mkdir -p runs as root, and it is the cp -a below that resets this directory's
 # owner to minecraft from the image copy. Dropping that cp -- it looks like a

@@ -26,8 +26,10 @@ Each has been verified against upstream source or confirmed with the maintainer.
    world and runs survival. Read item 4 of [`AGENTS.md`](AGENTS.md) before committing a
    world into `src/onboarding`.
 5. **`backup` covers only `survival`, `project-0`, and `project-1` on purpose.** Nothing
-   else accrues durable state — with one open question about `onboarding`'s world, which
-   nothing currently restores or backs up. See item 5 of [`AGENTS.md`](AGENTS.md).
+   else accrues durable state. `onboarding` is excluded for a slightly different reason
+   than the other two — its world is a disposable placeholder rather than an image-
+   restored artifact — settled by the maintainer and recorded in item 5 of
+   [`AGENTS.md`](AGENTS.md).
 
 ## Full guidance
 

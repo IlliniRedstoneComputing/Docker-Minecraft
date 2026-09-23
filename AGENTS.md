@@ -74,9 +74,11 @@ state:
   `gamemode=survival`. Its live world is whatever the server generated in the volume,
   that is the only copy, and the overwrite moves no world data today. It is not dead
   code, though: the `cp` is what leaves `/data/world` owned by `minecraft`, as the
-  entrypoint comment explains. Committing a world into
-  `src/onboarding/server/world` would begin overwriting player-modified chunks on every
-  restart. Settle the open question in item 5 first.
+  entrypoint comment explains. That volume world is a **disposable placeholder** — see
+  item 5 — so nothing is at risk today; publishing a real world into
+  `src/onboarding/server/world` is the intended end state, and it makes this server the
+  same case as `lobby`, including the part where the image starts overwriting whatever
+  players changed.
 
 ### 5. `backup` intentionally covers only `survival`, `project-0`, and `project-1`
 
@@ -88,13 +90,15 @@ Those are the only volumes holding state that accrues over time.
 
 Do not extend backup coverage to the other services.
 
-**Open question — `onboarding`.** Its exclusion was recorded on the same grounds as
-`lobby`'s, but `onboarding` ships no world in its image (item 4), so nothing restores it.
-Its world exists only in the `managed-files` volume under the `onboarding` subpath: not
-in git, not in the backup set. That is fine if the world is meant to be disposable and
-is about to be published as a code artifact the way `lobby`'s is; it is a silent
-data-loss risk otherwise. Awaiting a maintainer decision — do not change the backup set
-to "fix" it in the meantime.
+**`onboarding` is excluded for a different reason, settled by the maintainer.** Its
+exclusion was originally recorded on the same grounds as `lobby`'s, but `onboarding`
+ships no world in its image (item 4), so nothing restores it: its world exists only in
+the `managed-files` volume under the `onboarding` subpath, in neither git nor the backup
+set. Raised as a possible data-loss risk and **resolved 2026-09-23 — the world currently
+in that volume is a disposable placeholder.** A real onboarding world will be published
+as a code artifact the way `lobby`'s is, at which point this becomes the same case as
+`lobby`. Until then there is nothing to protect, and the backup set is correct as it
+stands. Do not reopen this, and do not add `onboarding` to `backup`.
 
 ## Platform: CRLF files and the Git Bash toolchain
 

@@ -94,8 +94,10 @@ These exist to prevent well-intentioned changes that would break things.
   only when builders publish a new design by rebuilding the image, and the world is
   restored from that image on every start — so a backup would duplicate what git already
   holds. **`onboarding` does not match that description yet.** It ships an empty world
-  and runs survival mode, so nothing restores its world and nothing backs it up; that
-  gap is an open question, recorded in item 5 of [`AGENTS.md`](AGENTS.md).
+  and runs survival mode, so nothing restores its world and nothing backs it up. The
+  world in that volume is a disposable placeholder, confirmed by the maintainer, so the
+  exclusion stands — it is just true for a different reason. Item 5 of
+  [`AGENTS.md`](AGENTS.md) records it.
 - **`velocity` and `mchprs` are excluded** because neither holds durable state worth
   restoring.
 
@@ -120,10 +122,11 @@ path is image-controlled or admin-controlled:
 Anything in the "seeded only if absent" rows can be edited durably over WebDAV. Anything
 re-synced every start cannot — change it in the image instead.
 
-**`onboarding/world/` is the exception to that rule, and the dangerous one.** The policy
-says re-synced, so the sentence above would have you treat it as disposable, but nothing
-re-syncs it: the volume holds the only copy, in neither git nor the backup set. Treat it
-as durable until the open question in item 5 of [`AGENTS.md`](AGENTS.md) is settled.
+**`onboarding/world/` is the exception to that rule.** The policy says re-synced, but
+nothing re-syncs it: the image ships an empty world, so the volume holds the only copy,
+in neither git nor the backup set. That copy is a disposable placeholder by design, so
+losing it costs nothing — but unlike the other re-synced rows, a write to it *does*
+persist. Item 5 of [`AGENTS.md`](AGENTS.md) has the detail.
 
 ### Permissions are defined in code
 
