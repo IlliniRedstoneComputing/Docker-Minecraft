@@ -3528,9 +3528,27 @@ This is that moment. Neither is a bug today.
    touching the last line of six files. Normalize only if item 1 is being done
    anyway, since that already rewrites the same files.
 
+3. **`set -euo pipefail` in four entrypoints, `set -e` in the other three.** `lobby`,
+   `onboarding`, `project-0` and `project-1` use the strict form; `survival`,
+   `velocity` and `mchprs` use bare `set -e`, because they were written and reviewed
+   before the strict form was adopted and harmonizing them was out of scope at the
+   time (recorded in this plan under Task 9). The strict form is safe in this code:
+   bash leaves an unmatched optional group in `BASH_REMATCH` as an empty string
+   rather than unset, so `${BASH_REMATCH[3]}` does not abort under `-u` on
+   `${VELOCITY_SECRET}`, which has no `:-default` clause. Verified in-image, bash
+   5.2.21: `n=4 g1=[VELOCITY_SECRET] g3=[]`. If the three are harmonized, re-check
+   each for unguarded `$1`/`$@` expansions first — `mchprs` in particular has not
+   been read with `-u` in mind.
+
 ```bash
 grep -n 'CONFIG_DIR\|/usr/src/init_data' src/*/entrypoint.sh
+grep -H '^set ' src/*/entrypoint.sh
 ```
+
+Expected, once all three items are closed: no single file both defines `CONFIG_DIR`
+and spells out the literal `/usr/src/init_data` prefix, and all seven `set` lines
+agree. Before they are closed, this block is a status report rather than a test —
+none of the three is a bug today.
 
 - [ ] **Step 3: Confirm the working tree and submodules are clean**
 

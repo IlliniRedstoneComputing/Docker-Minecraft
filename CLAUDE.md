@@ -16,8 +16,11 @@ Each has been verified against upstream source or confirmed with the maintainer.
    Do not delete the override to inherit the base image's — the base greps `"up":true`
    but the endpoint reports `"healthy":true`, so inheriting it leaves the container
    permanently unhealthy and `luckperms-init` never starts.
-2. **`velocity` needs no healthcheck added.** It inherits one from `itzg/mc-proxy`,
-   because `src/velocity/Dockerfile` overrides only `CMD`.
+2. **`velocity` needs no healthcheck added.** It inherits one from `itzg/mc-proxy`
+   because `src/velocity/Dockerfile` declares no `HEALTHCHECK` of its own — **not**
+   because it overrides only `CMD`. Inheritance is independent of how `CMD` or
+   `ENTRYPOINT` are overridden: `lobby`, `onboarding` and `survival` all replace
+   `ENTRYPOINT` outright and still report the base `mc-health` check.
 3. **`mchprs` takes a bare hostname — never add `:3306`.** It passes `host` to
    `OptsBuilder::ip_or_hostname()`, which defaults the port.
 4. **`lobby` and `onboarding` overwrite `world/` every restart on purpose.** Those worlds
