@@ -1598,8 +1598,17 @@ cp -a "$CONFIG_DIR/forwarding.secret" /server/forwarding.secret
 
 echo "Copying complete. Starting Velocity..."
 
-# This executes the CMD from your Dockerfile
-exec "/usr/bin/run-bungeecord.sh"
+# Hand off to the base image's CMD. itzg/mc-proxy declares
+# ENTRYPOINT ["/__cacert_entrypoint.sh"] and CMD ["/usr/bin/run-bungeecord.sh"],
+# and src/velocity/Dockerfile overrides ONLY the CMD, with this script. So the
+# cacert entrypoint has already run and exec'd us, and this line resumes the
+# chain where that override interrupted it. Overriding CMD rather than
+# ENTRYPOINT is also why the base image's HEALTHCHECK is still inherited --
+# AGENTS.md item 2.
+#
+# "$@" forwards anything appended at `docker run`. Safe when empty -- bash does
+# not treat an unset "$@" as an unbound variable under `set -u`.
+exec /usr/bin/run-bungeecord.sh "$@"
 ```
 
 Three things to note about this rewrite:
@@ -1907,8 +1916,17 @@ cp -a --update=none /usr/src/init_data/config/. /data/config/
 
 echo "Initialization complete. Starting server..."
 
-# This executes the CMD from your Dockerfile
-exec "/image/scripts/start"
+# Hand off to the base image's own entrypoint. itzg/minecraft-server declares
+# ENTRYPOINT ["/image/scripts/start"] and NO CMD (verified with docker image
+# inspect: Cmd=[]), and this server's Dockerfile replaces that ENTRYPOINT with
+# this script -- so nothing starts the server unless this line does.
+#
+# "$@" matters: /image/scripts/start ends in `exec ... start-configuration "$@"`,
+# so it forwards arguments onward. Dropping them here severs a path the base
+# image supports, and a CMD added to the Dockerfile, or arguments appended to
+# `docker run`, would be discarded in silence. Safe when empty -- bash does not
+# treat an unset "$@" as an unbound variable under `set -u`.
+exec /image/scripts/start "$@"
 ```
 
 - [ ] **Step 4: Verify config edits now survive a restart**
@@ -2071,6 +2089,13 @@ render_env_placeholders() {
   # comes back ending in a dangling bare CR with mixed endings. The sentinel
   # byte restores it exactly.
   #
+  # This is defensive here: the only file this script renders,
+  # FabricProxy-Lite.toml, ends WITHOUT a trailing newline (175 bytes, CR=4 LF=4
+  # across five lines), so nothing is lost today. It is kept because that file
+  # carries the forwarding secret, and a stray byte in a secret breaks auth
+  # invisibly. velocity's copy of this function renders velocity.toml, which is
+  # CRLF-terminated and genuinely hit this.
+  #
   # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
   # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
   # function would fall through with content="", truncate the file to zero
@@ -2185,14 +2210,27 @@ cp -a /usr/src/init_data/world/. /data/world/
 # on a spelling upstream has reserved the right to redefine. Verified
 # equivalent in this image (coreutils 9.4): an edited file is preserved, a
 # missing one is copied, and no warning is emitted.
+#
+# The policy has no removal story, and that is inherent rather than a bug:
+# seed-if-absent only ever adds, so a config file the image stops shipping stays
+# in /data/config forever. Retiring one means deleting it on each volume.
 mkdir -p /data/config
 cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
 
 echo "Initialization complete. Starting server..."
 
-# This executes the CMD from your Dockerfile
-exec "/image/scripts/start"
+# Hand off to the base image's own entrypoint. itzg/minecraft-server declares
+# ENTRYPOINT ["/image/scripts/start"] and NO CMD (verified with docker image
+# inspect: Cmd=[]), and this server's Dockerfile replaces that ENTRYPOINT with
+# this script -- so nothing starts the server unless this line does.
+#
+# "$@" matters: /image/scripts/start ends in `exec ... start-configuration "$@"`,
+# so it forwards arguments onward. Dropping them here severs a path the base
+# image supports, and a CMD added to the Dockerfile, or arguments appended to
+# `docker run`, would be discarded in silence. Safe when empty -- bash does not
+# treat an unset "$@" as an unbound variable under `set -u`.
+exec /image/scripts/start "$@"
 ```
 
 - [ ] **Step 3: Normalize both luckperms.conf files**
@@ -2326,6 +2364,13 @@ render_env_placeholders() {
   # comes back ending in a dangling bare CR with mixed endings. The sentinel
   # byte restores it exactly.
   #
+  # This is defensive here: the only file this script renders,
+  # FabricProxy-Lite.toml, ends WITHOUT a trailing newline (175 bytes, CR=4 LF=4
+  # across five lines), so nothing is lost today. It is kept because that file
+  # carries the forwarding secret, and a stray byte in a secret breaks auth
+  # invisibly. velocity's copy of this function renders velocity.toml, which is
+  # CRLF-terminated and genuinely hit this.
+  #
   # `&&`, not `;`. With `;` the substitution takes printf's exit status, which
   # is always 0, so a missing or unreadable file would NOT trip `set -e`: the
   # function would fall through with content="", truncate the file to zero
@@ -2402,17 +2447,39 @@ cp -a /usr/src/init_data/mods/. /data/mods/
 # on a spelling upstream has reserved the right to redefine. Verified
 # equivalent in this image (coreutils 9.4): an edited file is preserved, a
 # missing one is copied, and no warning is emitted.
+#
+# The policy has no removal story, and that is inherent rather than a bug:
+# seed-if-absent only ever adds, so a config file the image stops shipping stays
+# in /data/config forever. Retiring one means deleting it on each volume.
 mkdir -p /data/config
 cp -a --update=none /usr/src/init_data/config/. /data/config/
 [ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
 
 # world/ is deliberately never touched here. This server's world is
-# player-owned state.
+# player-owned state, and the image ships no world/ to seed it from. Contrast
+# with lobby, whose world IS a code artifact re-synced from the image on every
+# start -- see AGENTS.md item 4.
+#
+# Note what follows from that: because this script never copies world/, a world
+# committed into src/project-N/server/ would be baked into the image by the
+# Dockerfile's `COPY ./server .` and then silently ignored -- dead weight in the
+# image, no effect, no error. Publishing a world here would need a seeding line
+# added as well, and would change this server's world from player-owned to
+# image-owned, which is a policy decision, not a mechanical one.
 
 echo "Initialization complete. Starting server..."
 
-# This executes the CMD from your Dockerfile
-exec "/image/scripts/start"
+# Hand off to the base image's own entrypoint. itzg/minecraft-server declares
+# ENTRYPOINT ["/image/scripts/start"] and NO CMD (verified with docker image
+# inspect: Cmd=[]), and this server's Dockerfile replaces that ENTRYPOINT with
+# this script -- so nothing starts the server unless this line does.
+#
+# "$@" matters: /image/scripts/start ends in `exec ... start-configuration "$@"`,
+# so it forwards arguments onward. Dropping them here severs a path the base
+# image supports, and a CMD added to the Dockerfile, or arguments appended to
+# `docker run`, would be discarded in silence. Safe when empty -- bash does not
+# treat an unset "$@" as an unbound variable under `set -u`.
+exec /image/scripts/start "$@"
 ```
 
 - [ ] **Step 3: Confirm the luckperms.conf normalization reached both**
