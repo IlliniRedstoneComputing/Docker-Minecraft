@@ -2247,6 +2247,36 @@ cd ../..
 
 These two repositories share a byte-identical entrypoint. Unlike lobby and onboarding they seed no `world/` at all, and their worlds are player-owned and must never be overwritten.
 
+Audited before dispatch: both repos ship `server/config/FabricProxy-Lite.toml` (175 bytes,
+CRLF 4/4, carrying `secret = "${VELOCITY_SECRET}"`), `server/config/luckperms/luckperms.conf`
+already normalized to zero `${LUCKPERMS` placeholders, an identical 11-mod set, no
+`server/world` directory at all, and `gamemode=creative` with `force-gamemode=true`. The two
+entrypoints are byte-identical to each other and use `sed -i` for the secret, exactly as
+lobby and onboarding did.
+
+**Line endings:** both `entrypoint.sh` files are LF-only today (`CR=0 LF=18`), and writing
+them as LF keeps them that way — but **not** because of `.gitattributes`. As with lobby and
+onboarding, these are separate repositories: the parent's `*.sh text eol=lf` rule does not
+reach inside a submodule, and neither `src/project-0` nor `src/project-1` carries a
+`.gitattributes` of its own. Verified — `git -C src/project-0 check-attr text eol --
+entrypoint.sh` reports both attributes as `unspecified`. What holds the line is
+`core.autocrlf=false` plus the files already being LF in the index. Verify after writing with
+`tr -cd '\r' < file | wc -c` returning `0`. Their Dockerfiles are also LF-only (24/24),
+unlike lobby's and onboarding's, but this task does not touch them.
+
+**`set -euo pipefail` here, `set -e` in the siblings.** Same deliberate divergence as Task 9:
+`survival`, `velocity` and `mchprs` were written and reviewed with `set -e` and are not in
+scope. `-u` is safe in this function — bash leaves an unmatched optional group in
+`BASH_REMATCH` as an empty string, not unset, so `${BASH_REMATCH[3]}` does not abort on
+`${VELOCITY_SECRET}`, which carries no `:-default` clause. Verified in-image (bash 5.2.21,
+coreutils 9.4): the match reports `n=4 g1=[VELOCITY_SECRET] g3=[]`.
+
+**No world block, and that is the point.** Do not copy Task 9's `world/` handling into this
+file. These servers' worlds are player-owned state that must never be overwritten, and the
+images ship nothing to overwrite them with. `/data/world` is created by the server itself
+after itzg's start script has chowned `/data`, so the root-owned-directory trap documented in
+Task 9 does not arise here.
+
 - [ ] **Step 1: Branch both submodules**
 
 ```bash
