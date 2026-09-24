@@ -2900,6 +2900,32 @@ The REST API's OpenAPI schema declares context keys and values as `^[a-z0-9]+$`,
 
 Create `tests/test-seeder.sh`:
 
+**The answer is already known: hyphenated context values ARE accepted.** Measured on
+the running stack before this task was dispatched, so the probe below is written to
+confirm a known result rather than to discover an unknown one. Evidence:
+
+```
+PUT /group/<g>/nodes  [{"key":"test.node","value":true,
+                        "context":[{"key":"server","value":"project-0"}]}]   HTTP 200
+
+SELECT name, permission, value, server, world FROM luckperms_group_permissions:
+  ctxprobe1585   test.node   1   project-0   global
+
+GET /group/<g>:
+  {"nodes":[{"key":"test.node","type":"permission","value":true,
+             "context":[{"key":"server","value":"project-0"}]}], ...}
+```
+
+So the OpenAPI schema's `^[a-z0-9]+$` is not enforced by the implementation, and
+**Task 15 MAY use `server: project-0` and `server: project-1` contexts.** Write the
+probe anyway: it pins the behavior, so a LuckPerms upgrade that starts enforcing the
+schema fails here loudly instead of silently producing a permission model that no
+longer scopes to those servers.
+
+Match the conventions already established in `tests/test-luckperms.sh`: `tr -d '\r'`
+on the `.env` extraction, and the bearer token passed through a curl config on stdin
+rather than on the `docker run` argv.
+
 ```bash
 #!/usr/bin/env bash
 # luckperms-init correctness. Requires the stack to be running.
@@ -2907,40 +2933,65 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=lib.sh
 . tests/lib.sh
 
-SECRET=$(grep -E '^LUCKPERMS_SECRET=' .env | cut -d= -f2-)
+[ -r .env ] || bail ".env is not readable from $(pwd)"
 
+# tr -d '\r': .env is mixed-ending and LUCKPERMS_SECRET is one of the CRLF
+# lines. See the longer note in tests/test-luckperms.sh.
+SECRET=$(grep -E '^LUCKPERMS_SECRET=' .env | cut -d= -f2- | tr -d '\r')
+DB_USER=$(grep -E '^LUCKPERMS_DB_USER=' .env | cut -d= -f2- | tr -d '\r')
+DB_PASS=$(grep -E '^LUCKPERMS_DB_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
+DB_NAME=$(grep -E '^LUCKPERMS_DB=' .env | cut -d= -f2- | tr -d '\r')
+
+[ -n "$SECRET" ] || bail "LUCKPERMS_SECRET is empty or missing from .env"
+
+BASE="http://caddy:80"
+
+# Bearer token off the argv, where docker inspect and host ps would expose it.
+CURLRC=$(printf 'header = "Authorization: Bearer %s"\n' "$SECRET")
 api() {
-  local method="$1" path="$2" body="${3:-}"
-  if [ -n "$body" ]; then
-    docker run --rm --network irc-frontend-network curlimages/curl:latest \
-      -s -w '\n%{http_code}' -H "Authorization: Bearer $SECRET" \
-      -H 'Content-Type: application/json' -X "$method" -d "$body" \
-      "http://caddy:80/luckperms$path"
-  else
-    docker run --rm --network irc-frontend-network curlimages/curl:latest \
-      -s -w '\n%{http_code}' -H "Authorization: Bearer $SECRET" \
-      -X "$method" "http://caddy:80/luckperms$path"
-  fi
+  printf '%s' "$CURLRC" | docker run --rm -i --network irc-frontend-network \
+    curlimages/curl:latest -s -K - "$@"
 }
+
+GROUP="ctxprobe$$"
+seeder_cleanup() {
+  api -o /dev/null -X DELETE "$BASE/luckperms/group/$GROUP" >/dev/null 2>&1 || true
+}
+_prior_exit_trap=$(trap -p EXIT)
+_prior_exit_trap=${_prior_exit_trap#trap -- \'}
+_prior_exit_trap=${_prior_exit_trap%\' EXIT}
+trap "seeder_cleanup; ${_prior_exit_trap}" EXIT
+seeder_cleanup
 
 echo "context constraint probe"
 
+CODE=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -X POST -d "{\"name\":\"$GROUP\"}" "$BASE/luckperms/group")
+assert_eq "$CODE" "201" "the API created the probe group"
+
 # Does the API accept a context value containing a hyphen? The OpenAPI schema
-# says ^[a-z0-9]+$, which would reject project-0. LuckPerms itself allows it.
-api POST /group '{"name":"ctxprobe"}' >/dev/null
-RESP=$(api PUT /group/ctxprobe/nodes \
-  '[{"key":"test.node","value":true,"context":[{"key":"server","value":"project-0"}]}]')
-CODE=$(printf '%s' "$RESP" | tail -n1)
+# says ^[a-z0-9]+$, which would reject project-0. LuckPerms itself allows it,
+# and the implementation follows LuckPerms rather than the schema.
+CODE=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -X PUT -d '[{"key":"test.node","value":true,"context":[{"key":"server","value":"project-0"}]}]' \
+  "$BASE/luckperms/group/$GROUP/nodes")
+assert_eq "$CODE" "200" "hyphenated context values are accepted (project-0 usable)"
 
-if [ "$CODE" = "200" ] || [ "$CODE" = "201" ] || [ "$CODE" = "204" ]; then
-  pass "hyphenated context values are accepted (project-0 usable)"
-  echo "       -> permissions.yml MAY use per-server contexts for project servers"
-else
-  fail "hyphenated context values rejected with HTTP $CODE" \
-       "permissions.yml MUST NOT use server=project-0 contexts; see the fallback in the spec"
-fi
+# Acceptance is not enough. An API that took the write and silently dropped or
+# normalized the context would satisfy the status check above while leaving a
+# permission model that does not scope to those servers at all -- a failure
+# that would surface much later as "permissions apply everywhere". Confirm the
+# value actually persisted, straight from the storage LuckPerms reads.
+SERVERS=$(docker compose exec -T luckperms-db \
+  mariadb -u"$DB_USER" -p"$DB_PASS" -N -B \
+  -e "SELECT server FROM luckperms_group_permissions WHERE name = '$GROUP';" "$DB_NAME" 2>/dev/null | tr -d '\r')
+assert_eq "$SERVERS" "project-0" "the hyphenated context persisted to storage intact"
 
-api DELETE /group/ctxprobe >/dev/null
+# And it must survive the round trip back out through the API.
+READBACK=$(api "$BASE/luckperms/group/$GROUP")
+assert_contains "$READBACK" '"value":"project-0"' "the context reads back through the API"
+
+seeder_cleanup
 
 finish
 ```
@@ -2951,7 +3002,24 @@ finish
 bash tests/test-seeder.sh
 ```
 
-Record the outcome. **If it fails**, `permissions.yml` in Task 15 must not use `server: project-0` or `server: project-1` contexts; use `global` context instead and scope those servers by permission key. **If it passes**, per-server contexts are safe everywhere.
+Expected: `4 run, 0 failed`.
+
+The outcome is already settled by the measurement recorded above — per-server contexts
+ARE usable, so `permissions.yml` in Task 15 may scope nodes with `server: project-0`
+and `server: project-1`.
+
+Keep the fallback documented, because this suite exists to catch the day it changes:
+**if the probe ever fails**, `permissions.yml` must not use those contexts; use the
+`global` context instead and scope those servers by permission key.
+
+Note which failure means what. The `accepted` assertion failing means the API started
+enforcing the OpenAPI schema. The `persisted` or `reads back` assertion failing while
+`accepted` passes is worse — it means the write is being taken and silently discarded,
+so a permission model built on these contexts would look correct and apply everywhere.
+
+Separately, remember that MCHPRS sees only the `global` and `mchprs` server contexts
+(AGENTS.md, MCHPRS constraint 2). A `project-0` context is invisible to it by design;
+that is not a bug and is not what this probe is about.
 
 - [ ] **Step 3: Commit**
 
