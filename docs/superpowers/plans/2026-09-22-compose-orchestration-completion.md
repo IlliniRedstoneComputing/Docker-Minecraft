@@ -2570,7 +2570,8 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=lib.sh
 . tests/lib.sh
 
-# tr -d '\r' on every one of these: .env is a CRLF file (CR=28, LF=29). Git
+# tr -d '\r' on every one of these: .env is a mixed-ending file -- CRLF
+# throughout except the JAVA_OPTS line appended in Step 2 (CR=28, LF=30). Git
 # Bash's grep opens in text mode and strips the CR by accident, so this looks
 # unnecessary here and is not -- the same script on Linux keeps the CR, and a
 # trailing CR inside a bearer token produces a 401 that reads like a wrong
@@ -2581,12 +2582,40 @@ DB_USER=$(grep -E '^LUCKPERMS_DB_USER=' .env | cut -d= -f2- | tr -d '\r')
 DB_PASS=$(grep -E '^LUCKPERMS_DB_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
 DB_NAME=$(grep -E '^LUCKPERMS_DB=' .env | cut -d= -f2- | tr -d '\r')
 
+BASE="http://caddy:80"
+
+# Keep the bearer token off the docker run argv, where `docker inspect` and
+# host `ps` would expose it for the container's lifetime. curl reads it from a
+# config file on stdin instead -- the same trick tests/test-webdav.sh uses for
+# the WebDAV password.
+CURLRC=$(printf 'header = "Authorization: Bearer %s"\n' "$SECRET")
+
+# api <curl-args...> -- curl inside the frontend network, against Caddy.
+api() {
+  printf '%s' "$CURLRC" | docker run --rm -i --network irc-frontend-network \
+    curlimages/curl:latest -s -K - "$@"
+}
+
 # lp <path> -- GET the LuckPerms API through Caddy, exactly as an external
 # client would, prefix and all.
-lp() {
-  docker run --rm --network irc-frontend-network curlimages/curl:latest \
-    -s -H "Authorization: Bearer $SECRET" "http://caddy:80/luckperms$1"
+lp() { api "$BASE/luckperms$1"; }
+
+# The suite writes a real group into the shared database. Delete it both before
+# and after, so an interrupted run cannot poison the next one: $$ is unique per
+# run but PIDs recycle, and against a leftover group the POST becomes an update
+# rather than a create.
+#
+# tests/lib.sh installs its own EXIT trap to remove its temp result logs, so
+# chain onto it rather than replacing it -- a plain `trap lp_cleanup EXIT`
+# silently discards lib.sh's cleanup. See the same pattern in test-webdav.sh.
+lp_cleanup() {
+  [ -n "${GROUP:-}" ] || return 0
+  api -o /dev/null -X DELETE "$BASE/luckperms/group/$GROUP" >/dev/null 2>&1 || true
 }
+_prior_exit_trap=$(trap -p EXIT)
+_prior_exit_trap=${_prior_exit_trap#trap -- \'}
+_prior_exit_trap=${_prior_exit_trap%\' EXIT}
+trap "lp_cleanup; ${_prior_exit_trap}" EXIT
 
 echo "luckperms"
 
@@ -2641,14 +2670,39 @@ assert_eq "$VH2" "NONE" "velocity created no H2 database"
 # That is the SQL messenger delivering a cross-server notification, which is
 # the property under test -- more direct than any command output.
 #
+# Creating a group is NOT enough to trigger one. Measured on the running stack
+# under a controlled probe -- 20s quiet beforehand to establish that nothing
+# pings spontaneously, then one call at a time:
+#
+#   quiet 20s                           6 -> 6
+#   POST /group          (201)          6 -> 6   after a full 60 seconds
+#   PUT  /group/<g>/nodes (200)         6 -> 7   within 5 seconds
+#   DELETE /group/<g>    (200)          ping, ~1 second
+#
+# So the group create alone produces no bus message, and a test that waits for
+# one fails on a perfectly healthy stack -- while reporting the failure as
+# "messaging is broken", which is the worst available way to be wrong. This is
+# not a defect to fix: an empty group changes nothing a backend caches, and the
+# write immediately after it does push. Do not "correct" this back to asserting
+# on the create.
+#
+# Note for anyone re-measuring: a DELETE also pings, so a probe that creates a
+# group, deletes it, and then creates another will see a ping arrive shortly
+# after the second create that was actually caused by the first delete. That
+# false attribution is how the create was originally believed to ping at all.
+# Leave a quiet gap, and change one thing at a time.
+#
 # Count BEFORE and require the count to rise. A bare grep would pass on a ping
 # from earlier in the container's life and never fail.
 GROUP="msgtest$$"
 PINGS_BEFORE=$(docker compose logs survival 2>/dev/null | grep -c 'Received update ping')
 
-docker run --rm --network irc-frontend-network curlimages/curl:latest \
-  -s -o /dev/null -H "Authorization: Bearer $SECRET" -H 'Content-Type: application/json' \
-  -X POST -d "{\"name\":\"$GROUP\"}" "http://caddy:80/luckperms/group"
+api -o /dev/null -H 'Content-Type: application/json' \
+  -X POST -d "{\"name\":\"$GROUP\"}" "$BASE/luckperms/group"
+
+# The write that actually exercises the messenger.
+api -o /dev/null -H 'Content-Type: application/json' \
+  -X PUT -d '[{"key":"test.probe","value":true}]' "$BASE/luckperms/group/$GROUP/nodes"
 
 FOUND=NO
 for _ in $(seq 1 30); do
@@ -2656,16 +2710,14 @@ for _ in $(seq 1 30); do
   if [ "$PINGS_NOW" -gt "$PINGS_BEFORE" ]; then FOUND=YES; break; fi
   sleep 2
 done
-assert_eq "$FOUND" "YES" "a group created via the API pings survival without a restart"
+assert_eq "$FOUND" "YES" "a group written via the API pings survival without a restart"
 
 # And the write itself must have landed in the shared database.
 GROUPS_SQL=$(docker compose exec -T luckperms-db \
   mariadb -u"$DB_USER" -p"$DB_PASS" -N -B -e "SELECT name FROM luckperms_groups;" "$DB_NAME" 2>/dev/null)
 assert_contains "$GROUPS_SQL" "$GROUP" "the new group is present in the shared database"
 
-docker run --rm --network irc-frontend-network curlimages/curl:latest \
-  -s -o /dev/null -H "Authorization: Bearer $SECRET" \
-  -X DELETE "http://caddy:80/luckperms/group/$GROUP"
+lp_cleanup
 
 finish
 ```
@@ -3620,9 +3672,9 @@ Expected: one line in each — the intentional world re-sync is intact.
 
 - [ ] **Step 2b: Close the deferrals this plan accumulated**
 
-Two items were declined during Tasks 9 and 10 on the explicit grounds that they
+Items 1-4 were declined during Tasks 8, 9 and 10 on the explicit grounds that they
 should change across the whole entrypoint family at once, rather than splitting it.
-This is that moment. Neither is a bug today.
+This is that moment. None of them is a bug today. Item 5 came later, from Task 12.
 
 1. **`CONFIG_DIR` is used once while the same prefix is hardcoded three more times.**
    In all five Fabric entrypoints, `CONFIG_DIR="/usr/src/init_data/config"` is used
@@ -3669,16 +3721,33 @@ This is that moment. Neither is a bug today.
    status disarms `set -e`, and the function truncates a secret-bearing file to zero
    bytes. Harmonize it only with `&&`, or leave it alone.
 
+5. **`tests/test-webdav.sh` reads `.env` without `tr -d '\r'`.** Found during Task 12,
+   which added the guard to `tests/test-luckperms.sh` but deliberately did not widen
+   its scope to rewrite a sibling suite. `test-webdav.sh` extracts
+   `WEBDAV_USERNAME` and `WEBDAV_PASSWORD` from a file whose lines are CRLF, and
+   survives only because Git Bash's `grep` opens in text mode and strips the CR by
+   accident — the same platform quirk `AGENTS.md` documents. Run that suite under a
+   Linux `grep` and both credentials carry a trailing CR, which presents as an
+   authentication failure rather than as a line-ending bug. Add the same
+   `| tr -d '\r'` to both extractions.
+
 ```bash
 grep -n 'CONFIG_DIR\|/usr/src/init_data' src/*/entrypoint.sh
 grep -H '^set ' src/*/entrypoint.sh
 grep -n 'content=$(cat' src/*/entrypoint.sh
+grep -c 'tr -d' tests/test-webdav.sh
 ```
 
-Expected, once all three items are closed: no single file both defines `CONFIG_DIR`
-and spells out the literal `/usr/src/init_data` prefix, and all seven `set` lines
-agree. Before they are closed, this block is a status report rather than a test —
-none of the three is a bug today.
+Expected, once all five items are closed: no single file both defines `CONFIG_DIR`
+and spells out the literal `/usr/src/init_data` prefix, all seven `set` lines agree,
+and `test-webdav.sh` reports 2 rather than 0. Before they are closed, this block is a
+status report rather than a test — none of the five is a bug on this host today, and
+item 5 is the only one that becomes a real failure off it.
+
+Decide each item explicitly. Leaving one open is a legitimate outcome, but record the
+decision here rather than letting it lapse — every one of these was already declined
+once, and an item that is silently dropped twice looks settled without anyone having
+settled it.
 
 - [ ] **Step 3: Confirm the working tree and submodules are clean**
 
