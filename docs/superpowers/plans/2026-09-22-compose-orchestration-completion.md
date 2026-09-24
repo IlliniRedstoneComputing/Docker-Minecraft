@@ -4698,16 +4698,52 @@ printf 'user = "%s:%s"\n' "$WU" "$WP" | docker run --rm -i \
 
 Expected: the directory is owned by `1000 1000`, and `PUT=201`.
 
-Then confirm the reverse direction — that a Minecraft server can rewrite a file WebDAV
+**`PUT=201` on its own proves nothing about uid alignment.** `volume_init` runs
+`chmod -R 777 /mnt/data`, so on a fresh deployment every directory in the shared
+volume is world-writable and that PUT succeeds whatever uid WebDAV runs as.
+Treat the 201 as proof that Caddy routed the request and WebDAV authenticated
+it — which is worth having, and is all it is.
+
+The uid claim rests on ownership instead. Check what WebDAV actually created:
+
+```bash
+docker compose exec -T survival sh -c 'ls -ln /data/config/uidtest.txt'
+```
+
+Expected: `-rw-r--r-- 1 1000 1000`. A `0 0` here is the regression this whole
+step exists to catch — it means WebDAV is writing as root again, and every file
+it creates is one the server process cannot modify.
+
+Then confirm the reverse direction — that the server can rewrite a file WebDAV
 created, which is what running webdav as uid 1000 rather than root buys:
 
 ```bash
-docker compose exec -T survival sh -c 'echo rewritten > /data/config/uidtest.txt && cat /data/config/uidtest.txt'
+docker compose exec -u 1000 -T survival sh -c 'echo rewritten > /data/config/uidtest.txt && cat /data/config/uidtest.txt'
 docker compose exec -T survival sh -c 'rm -f /data/config/uidtest.txt'
 ```
 
-Expected: `rewritten`, with no permission error. A failure here means the ownership
-alignment regressed.
+Expected: `rewritten`, with no permission error. A failure here means the
+ownership alignment regressed.
+
+**`-u 1000` is load-bearing — do not drop it.** `survival` declares no
+`user:`, so `Config.User` is empty and a plain `docker compose exec` lands as
+**root**, which bypasses file-permission checks entirely. Only the server
+*process* runs as 1000 (`docker top` shows uid 1000 on the `java` and
+`mc-server-runner` lines). Measured in-container: as root, `echo x > file`
+succeeded against a file owned `9999:9999` with mode `600`. Without `-u 1000`
+this check passes even when WebDAV writes as root, i.e. exactly when it should
+fail.
+
+Controls for `-u 1000`, both measured here:
+
+| File the check writes to | As uid 1000 |
+| --- | --- |
+| owned `0 0`, mode 644 | `cannot create ...: Permission denied` |
+| owned `1000 1000`, mode 644 | rewrites it |
+
+Note the `rm -f` cleanup stays as root on purpose: it only needs write
+permission on the directory, and running it as 1000 would add nothing while
+risking a cleanup that fails and poisons the next run.
 
 - [ ] **Step 5: Verify MCHPRS reads the seeded model**
 
