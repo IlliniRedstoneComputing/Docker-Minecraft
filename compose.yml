@@ -107,6 +107,25 @@ services:
       luckperms-db:
         condition: service_healthy
 
+  # One-shot: applies src/luckperms-init/permissions.yml through the REST API.
+  # Runs on every `up`; idempotent, and reports changed=0 when already correct.
+  luckperms-init:
+    build:
+      context: ./src/luckperms-init
+    container_name: luckperms-init
+    restart: "no"
+    environment:
+      - LUCKPERMS_API_URL=http://luckperms-standalone:8080
+      - LUCKPERMS_SECRET=${LUCKPERMS_SECRET:-luckpermssecret}
+      - PERMISSIONS_FILE=/permissions.yml
+    volumes:
+      - ./src/luckperms-init/permissions.yml:/permissions.yml:ro
+    networks:
+      - frontend-network
+    depends_on:
+      luckperms-standalone:
+        condition: service_healthy
+
   # WebDAV interface over the shared server-data volume.
   # Single service account by design -- see src/webdav/config.yml.
   webdav:

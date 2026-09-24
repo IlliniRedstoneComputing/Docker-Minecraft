@@ -62,8 +62,24 @@ api() {
 # ^ctxprobe[0-9]+$ would remove a concurrently running copy's group out from
 # under it. Full reasoning in tests/test-luckperms.sh.
 GROUP="ctxprobe$$"
+
+# Part A's scratch artifacts are named here for exactly the reason given above:
+# seeder_cleanup runs once before the suite starts, when none of them exist.
+# PROBE_MODEL starts empty because mktemp has not run yet at that point.
+P_BASE="seedprobe-base$$"
+P_CHILD="seedprobe-child$$"
+P_TRACK="seedprobe-track$$"
+SEED_IMAGE="luckperms-init-test-$$"
+PROBE_MODEL=""
+
 seeder_cleanup() {
   api -o /dev/null -X DELETE "$BASE/luckperms/group/$GROUP" >/dev/null 2>&1 || true
+  api -o /dev/null -X DELETE "$BASE/luckperms/group/$P_BASE" >/dev/null 2>&1 || true
+  api -o /dev/null -X DELETE "$BASE/luckperms/group/$P_CHILD" >/dev/null 2>&1 || true
+  api -o /dev/null -X DELETE "$BASE/luckperms/track/$P_TRACK" >/dev/null 2>&1 || true
+  docker image rm "$SEED_IMAGE" >/dev/null 2>&1 || true
+  [ -n "$PROBE_MODEL" ] && rm -f "$PROBE_MODEL"
+  return 0
 }
 _prior_exit_trap=$(trap -p EXIT)
 _prior_exit_trap=${_prior_exit_trap#trap -- \'}
@@ -123,6 +139,162 @@ assert_eq "$SERVERS" "project-0" "the hyphenated context persisted to storage in
 READBACK=$(api "$BASE/luckperms/group/$GROUP")
 assert_contains "$READBACK" '"key":"server","value":"project-0"' \
   "the server context reads back through the API"
+
+echo "seeder"
+
+# ===========================================================================
+# Part A: idempotency across three starting states
+# ===========================================================================
+# Part A runs the seeder against a SCRATCH model with its own group names
+# rather than against src/luckperms-init/permissions.yml. Two reasons:
+#
+#   - One state we have to manufacture is "these groups do not exist".
+#     Manufacturing that for the real model means deleting `default` from a
+#     live server: a destructive act on shared state, for no test benefit.
+#   - A scratch model tears down completely, so this section leaves no trace
+#     and can be re-run in any order against a stack that is already seeded.
+#
+# Why THREE states and not the obvious two: the middle one is where the most
+# common seeder bug hides. A seeder whose "already applied?" check asks
+# whether the GROUP exists short-circuits on a half-seeded database, reports
+# changed=0, and writes no nodes at all -- looking perfectly idempotent while
+# having done nothing. Only a state that separates "group exists" from "nodes
+# applied" can tell the two apart. That is not hypothetical on this host: the
+# live database sat in precisely that state -- four groups, zero rows in
+# luckperms_group_permissions -- before the seeder first ran.
+#
+# States are built through the API, never with SQL. Measured: the standalone
+# serves the API from an in-memory cache and does not see direct database
+# writes, so a SQL-built state would be invisible to the thing under test.
+
+docker build -q -t "$SEED_IMAGE" ./src/luckperms-init >/dev/null 2>&1 \
+  || bail "could not build src/luckperms-init"
+
+PROBE_MODEL=$(mktemp)
+printf '%s\n' \
+  "groups:" \
+  "  $P_BASE:" \
+  "    weight: 5" \
+  "    permissions:" \
+  '      - "seedprobe.base"' \
+  "  $P_CHILD:" \
+  "    weight: 50" \
+  '    prefix: "&e[Probe] "' \
+  "    inherits:" \
+  "      - $P_BASE" \
+  "    permissions:" \
+  '      - key: "seedprobe.child"' \
+  "        value: true" \
+  '      - key: "seedprobe.denied"' \
+  "        value: false" \
+  "tracks:" \
+  "  $P_TRACK:" \
+  "    groups:" \
+  "      - $P_BASE" \
+  "      - $P_CHILD" \
+  >"$PROBE_MODEL"
+
+# The model arrives on stdin rather than as a bind mount: this repository is
+# checked out under a path containing spaces, and MSYS_NO_PATHCONV keeps Git
+# Bash from rewriting the leading slash of /dev/stdin into a Windows path.
+seed_probe() {
+  MSYS_NO_PATHCONV=1 docker run --rm -i --network irc-frontend-network \
+    -e LUCKPERMS_SECRET="$SECRET" \
+    -e LUCKPERMS_API_URL=http://luckperms-standalone:8080 \
+    -e PERMISSIONS_FILE=/dev/stdin \
+    "$SEED_IMAGE" <"$PROBE_MODEL" 2>&1
+}
+
+# --- State 1: empty. Neither scratch group exists. ---
+RUN_EMPTY=$(seed_probe)
+assert_contains "$RUN_EMPTY" "created group $P_BASE" \
+  "state 1 (empty): creates the missing group"
+assert_contains "$RUN_EMPTY" "changed=6" \
+  "state 1 (empty): 6 changes (2 groups + 2 node sets + track created + track set)"
+
+NODES_EMPTY=$(api "$BASE/luckperms/group/$P_CHILD/nodes")
+assert_contains "$NODES_EMPTY" "group.$P_BASE" \
+  "state 1 (empty): inheritance is stored as a group.<name> node"
+
+# --- State 3: fully seeded. Taken here because state 1 just produced it. ---
+RUN_SEEDED=$(seed_probe)
+assert_contains "$RUN_SEEDED" "changed=0" "state 3 (fully seeded): reports no changes"
+assert_not_contains "$RUN_SEEDED" "created group" "state 3 (fully seeded): creates nothing"
+assert_not_contains "$RUN_SEEDED" "pushed update" \
+  "state 3 (fully seeded): pushes no messaging update"
+
+# --- State 2: half-seeded. Groups present, nodes gone. ---
+for g in "$P_BASE" "$P_CHILD"; do
+  CODE=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X PUT -d '[]' "$BASE/luckperms/group/$g/nodes")
+  assert_eq "$CODE" "200" "state 2 setup: emptied $g's node set"
+done
+
+RUN_HALF=$(seed_probe)
+assert_not_contains "$RUN_HALF" "created group" \
+  "state 2 (half-seeded): the groups already exist, so nothing is created"
+assert_contains "$RUN_HALF" "changed=2" \
+  "state 2 (half-seeded): rewrites both node sets"
+assert_contains "$RUN_HALF" "track $P_TRACK: already correct" \
+  "state 2 (half-seeded): leaves the intact track alone"
+
+# The point of the entire section. A seeder that short-circuits on group
+# existence reports changed=0 above and leaves this empty.
+NODES_HALF=$(api "$BASE/luckperms/group/$P_CHILD/nodes")
+assert_eq "$NODES_HALF" "$NODES_EMPTY" \
+  "state 2 converges to the same node set as state 1"
+
+# ===========================================================================
+# Part B: the real model, through compose, against the live stack
+# ===========================================================================
+# Part A proved the seeder's LOGIC. Part B proves the WIRING: that the compose
+# service builds, reaches the API, and applies permissions.yml.
+#
+# --no-deps is deliberate. luckperms-init depends_on luckperms-standalone,
+# which is already running and healthy. Measured on compose v5.5.1, a
+# --force-recreate of one service reports its dependencies as "Running" rather
+# than recreating them, so this is belt and braces rather than a fix for an
+# observed bug -- but it makes the guarantee explicit instead of leaving it to
+# a compose version's behaviour.
+#
+# This section asserts the END STATE rather than a change count, so it passes
+# whether or not the stack was already seeded, and the suite stays re-runnable.
+docker compose up --build --no-deps --force-recreate luckperms-init >/dev/null 2>&1
+DEPLOY=$(docker compose logs --no-log-prefix luckperms-init 2>/dev/null)
+assert_contains "$DEPLOY" "changed=" "the compose service ran to completion"
+assert_not_contains "$DEPLOY" "INCOMPLETE" "the compose service did not fail partway"
+
+GROUPS=$(api "$BASE/luckperms/group")
+for g in default onboarder member admin; do
+  assert_contains "$GROUPS" "\"$g\"" "group $g exists"
+done
+
+# A track is ORDERED; a set-equal check would pass on a scrambled ladder.
+TRACK=$(api "$BASE/luckperms/track/onboarding")
+assert_contains "$TRACK" '"groups":["onboarder","member","admin"]' \
+  "the onboarding track is in model order"
+
+MEMBER_NODES=$(api "$BASE/luckperms/group/member/nodes")
+assert_contains "$MEMBER_NODES" "group.onboarder" \
+  "member inherits onboarder as a group.<name> node"
+assert_contains "$MEMBER_NODES" "weight.100" "member carries its weight node"
+assert_contains "$MEMBER_NODES" "mchprs.command.*" "member carries the mchprs wildcard"
+
+# MCHPRS reads the database directly rather than through the API, and Part A
+# established that the two can disagree, so confirm the node reached storage
+# and not merely the cache. This is the assertion that would catch a write the
+# API acknowledged and never persisted.
+MEMBER_ROWS=$(docker compose exec -T luckperms-db \
+  mariadb -u"$DB_USER" -p"$DB_PASS" -N -B \
+  -e "SELECT permission FROM luckperms_group_permissions WHERE name = 'member';" \
+  "$DB_NAME" 2>/dev/null | tr -d '\r')
+assert_contains "$MEMBER_ROWS" "group.onboarder" \
+  "member's inheritance node is in storage, where MCHPRS reads it"
+
+# And the deployment path itself must settle.
+docker compose up --no-deps --force-recreate luckperms-init >/dev/null 2>&1
+SECOND=$(docker compose logs --no-log-prefix luckperms-init 2>/dev/null)
+assert_contains "$SECOND" "changed=0" "a second compose run is a no-op"
 
 # Cleanup also runs from the EXIT trap; this is belt and braces.
 seeder_cleanup
