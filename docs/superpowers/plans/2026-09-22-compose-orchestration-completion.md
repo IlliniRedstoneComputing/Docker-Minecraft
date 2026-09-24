@@ -3317,6 +3317,27 @@ def as_int(value, where):
         sys.exit(f"{where}: expected a whole number, got {value!r}")
 
 
+def as_list(value, where):
+    """Require a real list. A bare scalar is NOT an acceptable one-item list.
+
+    Python strings are iterable, so `permissions: essentials.home` -- the
+    brackets and dashes left off, which is an ordinary thing to type -- reads
+    as ['e','s','s','e','n',...]. Measured before this guard existed: that
+    wrote fifteen single-character permission nodes, one of them named `.`,
+    destroyed the group's real permissions in the same breath because a write
+    replaces wholesale, pushed the lot to every running server, and exited 0.
+    It was then stably idempotent, so nothing would ever have flagged it.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        sys.exit(
+            f"{where}: must be a list, got {type(value).__name__} -- write "
+            f"`[value]` or a `- value` block, never a bare scalar"
+        )
+    return value
+
+
 def request(method, path, body=None):
     """Return (status_code, parsed_body_or_text).
 
@@ -3449,6 +3470,13 @@ def check_mchprs_closure(desired, inherits_of):
     The closure covers groups the model defines. A parent inherited from
     outside the model -- the ad-hoc escape hatch -- is invisible here. That is
     a limit worth knowing, not a reason to skip the check.
+
+    Node contexts are deliberately ignored. Per AGENTS.md constraint 2 MCHPRS
+    only sees the `global` and `mchprs` server contexts, so a prefix pair
+    scoped to `server: survival` could not actually panic it and is rejected
+    anyway. That over-rejection is the intended trade: the cost of filtering by
+    context wrongly is a crashed Minecraft server, and the cost of rejecting
+    too much is one edit to a YAML file.
     """
     for name in desired:
         keys = set()
@@ -3496,10 +3524,10 @@ def build_nodes(group_name, spec):
         )
         nodes.append({"key": f"prefix.{priority}.{prefix}", "value": True, "context": []})
 
-    for parent in spec.get("inherits", []) or []:
+    for parent in as_list(spec.get("inherits"), f"group '{group_name}' inherits"):
         nodes.append({"key": f"group.{parent}", "value": True, "context": []})
 
-    for entry in spec.get("permissions", []) or []:
+    for entry in as_list(spec.get("permissions"), f"group '{group_name}' permissions"):
         if isinstance(entry, str):
             nodes.append({"key": entry, "value": True, "context": []})
             continue
@@ -3667,7 +3695,7 @@ def check_reference_names(groups, tracks):
     pointing at the line that is wrong.
     """
     for name, spec in groups.items():
-        for parent in (spec or {}).get("inherits") or []:
+        for parent in as_list((spec or {}).get("inherits"), f"group '{name}' inherits"):
             if not NAME_RE.match(str(parent)):
                 sys.exit(
                     f"group '{name}' inherits '{parent}', which must match "
@@ -3675,7 +3703,7 @@ def check_reference_names(groups, tracks):
                     f"transit, so this could never converge"
                 )
     for name, spec in tracks.items():
-        for member in spec.get("groups") or []:
+        for member in as_list(spec.get("groups"), f"track '{name}' groups"):
             if not NAME_RE.match(str(member)):
                 sys.exit(
                     f"track '{name}' lists '{member}', which must match "
@@ -3694,22 +3722,28 @@ def check_references_exist(desired, wanted_tracks, inherits_of, existing_names):
     well formed, so it sails through, stores a dangling `group.membr`, and is
     then perfectly idempotent -- changed=0 forever, while the player inherits
     nothing at all.
+
+    Consulting the server means the SAME permissions.yml can be valid here and
+    invalid against a fresh database, which is disaster recovery -- the worst
+    possible moment to find out. That is still the right trade, because the
+    alternative refuses to run against a perfectly good live configuration, but
+    it is why the message below names the ad-hoc case explicitly rather than
+    leaving someone to read it as a typo and go hunting in the wrong file.
     """
     known = set(desired) | set(existing_names)
+    hint = (
+        f"neither defined in {MODEL_PATH} nor present on the server. If it is "
+        f"an ad-hoc group this file does not manage, it has to exist before "
+        f"this runs -- which it will not on a freshly created database."
+    )
     for name in sorted(inherits_of):
         for parent in inherits_of[name]:
             if parent not in known:
-                sys.exit(
-                    f"group '{name}' inherits '{parent}', which is neither "
-                    f"defined in {MODEL_PATH} nor present on the server"
-                )
+                sys.exit(f"group '{name}' inherits '{parent}', which is {hint}")
     for name in sorted(wanted_tracks):
         for member in wanted_tracks[name]:
             if member not in known:
-                sys.exit(
-                    f"track '{name}' lists '{member}', which is neither defined "
-                    f"in {MODEL_PATH} nor present on the server"
-                )
+                sys.exit(f"track '{name}' lists '{member}', which is {hint}")
 
 
 def load_model():
@@ -3765,9 +3799,12 @@ def main():
     # Expand everything BEFORE the first write, so a model error cannot leave
     # the database half-applied.
     desired = {name: build_nodes(name, spec or {}) for name, spec in groups.items()}
-    wanted_tracks = {name: list(spec.get("groups") or []) for name, spec in tracks.items()}
+    wanted_tracks = {
+        name: list(as_list(spec.get("groups"), f"track '{name}' groups"))
+        for name, spec in tracks.items()
+    }
     inherits_of = {
-        name: [str(p) for p in ((spec or {}).get("inherits") or [])]
+        name: [str(p) for p in as_list((spec or {}).get("inherits"), f"group '{name}' inherits")]
         for name, spec in groups.items()
     }
     check_mchprs_closure(desired, inherits_of)
@@ -3781,6 +3818,7 @@ def main():
     check_references_exist(desired, wanted_tracks, inherits_of, existing_names)
 
     complete = False
+    failed = False
     failure = None
     try:
         for name, nodes in desired.items():
@@ -3790,13 +3828,20 @@ def main():
             apply_track(name, order)
         complete = True
     except SystemExit as exc:
+        # Flag the failure separately from its message. A bare sys.exit() sets
+        # `code` to None, so keying off `failure is not None` would swallow the
+        # exception, print INCOMPLETE, and then return from main() with status
+        # 0 -- a failure made invisible, which is the one thing this file is
+        # built to prevent. No call site does that today; this keeps it from
+        # mattering the day one does.
+        failed = True
         failure = exc.code
     finally:
         # Print the cause before the summary. The finally would otherwise run
         # ahead of SystemExit's own message, leaving the log reading
         # "INCOMPLETE" first and the reason for it afterwards -- and the tail of
         # the log is what gets pasted into a bug report.
-        if failure is not None:
+        if isinstance(failure, str):
             print(failure, file=sys.stderr)
         # Push whatever DID land, even when a later group failed. Otherwise a
         # persistent failure on one group strands every earlier group's writes
@@ -3812,7 +3857,7 @@ def main():
             # to satisfy a log check looking for changed=0.
             print(f"INCOMPLETE -- failed after {changes} change(s)", file=sys.stderr)
 
-    if failure is not None:
+    if failed:
         sys.exit(1)
 
 
