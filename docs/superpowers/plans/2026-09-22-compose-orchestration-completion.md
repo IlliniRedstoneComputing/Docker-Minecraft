@@ -56,7 +56,7 @@
 | `src/luckperms-standalone/Initialization-1.0-SNAPSHOT.jar` | Unsourced binary, replaced by the seeder |
 | `wg0.conf.example` | Dead — no WireGuard service exists |
 
-**Submodule note:** `src/lobby`, `src/onboarding`, `src/project-0`, and `src/project-1` are separate repositories. Changes there are committed and pushed on a branch in each repository, then the parent repository's submodule pointers are bumped in Task 12.
+**Submodule note:** `src/lobby`, `src/onboarding`, `src/project-0`, and `src/project-1` are separate repositories. Changes there are committed and pushed on a branch in each repository, then the parent repository's submodule pointers are bumped in Task 11.
 
 ---
 
@@ -3463,6 +3463,37 @@ On a host with less than about 20 GB of RAM, lower `JAVA_OPTS` in `.env` before
 running the full stack.
 ```
 
+- [ ] **Step 3b: Document where the submodule pointers actually point**
+
+Task 11 pushed the four server submodules on `claude/luckperms-seeding-fixes` and bumped
+the parent's gitlinks to those commits. They are **not** on any submodule's `main`, and a
+gitlink records a bare SHA with no ref name, so nothing in a checkout reveals which branch
+a pointer came from. That fact currently lives only in the Task 11 commit message, which
+is where nobody looks until after it breaks.
+
+Add a note to the submodule step of `README.md` setup, next to
+`git submodule update --init --recursive`:
+
+```
+The four server submodules are pinned to commits on the
+`claude/luckperms-seeding-fixes` branch of their repositories, not to `main`. Until
+those branches are merged, do not delete or force-push them -- a gitlink records a
+bare SHA, and if no ref on the remote still reaches it, `git submodule update` fails
+and the checkout cannot be completed.
+
+Merging them needs care: a squash or rebase merge writes a new commit, so the pinned
+SHA survives only on the branch, and "automatically delete head branches" then removes
+the last ref holding it. Either merge with a real merge commit or fast-forward, or
+re-bump the four pointers to the post-merge `main` SHAs in the same change.
+```
+
+Do not add a `branch =` key to `.gitmodules` to "fix" this. Submodules here are build
+inputs -- Compose builds them into images -- so pinning by SHA is what makes "this parent
+commit produces that image" true. `branch = main` would be worse than useless: the
+recorded SHAs are not on `main`, so `git submodule update --remote` would roll all four
+pointers backwards onto the pre-fix entrypoints, reinstating the `sed`-based secret
+injection, and would present as a working checkout rather than an error.
+
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -3574,6 +3605,53 @@ git submodule status
 ```
 
 Expected: no output from the first; no `+` prefixes from the second.
+
+- [ ] **Step 3b: Confirm every gitlink is still reachable on its remote**
+
+`git submodule status` above is **not** sufficient and must not be treated as if it
+were. It reads local objects, so it prints four clean lines whether or not those commits
+still exist on origin -- it would pass unchanged the day after all four branches were
+squash-merged and their heads deleted, which is exactly the failure that breaks a fresh
+clone. Check the remote instead:
+
+```bash
+git submodule foreach --quiet '
+  git fetch --quiet --prune origin 2>/dev/null
+  sha=$(git rev-parse HEAD)
+  refs=$(git branch -r --contains "$sha" 2>/dev/null | tr -d " " | tr "\n" "," | sed "s/,$//")
+  if [ -n "$refs" ]; then
+    echo "$name: $sha REACHABLE from $refs"
+  else
+    echo "$name: $sha NOT REACHABLE FROM ANY REMOTE REF -- clones will fail"
+  fi
+'
+```
+
+Expected: four `REACHABLE from ...` lines. Any `NOT REACHABLE` means the parent pointer
+references a commit a fresh clone cannot obtain; `git submodule update` fails there with
+no way to recover the tree. Fix it before merging by pushing a ref that reaches the
+commit, or by re-bumping the pointer to one that is reachable.
+
+Use `--contains` and not `ls-remote | grep "^$sha"`. The grep form only matches a SHA that
+is itself a **ref tip**, so the moment these branches merge with a merge commit the pinned
+SHA becomes an ordinary ancestor of `main` and the grep form reports it missing although it
+is perfectly fetchable. That false alarm would land precisely in the post-merge situation
+this step exists to check. Verified both ways: `--contains` finds an ancestor commit (it
+reports `origin/main` for one) and still rejects a fabricated SHA. The `git fetch` on the
+first line is load-bearing — `branch -r` reads remote-tracking refs, which are stale
+otherwise, and a deleted upstream branch only disappears from them after `--prune`.
+
+Note what this checks and what it does not: it proves some ref on origin reaches that SHA,
+using these credentials. It cannot prove the commit will still be reachable after the four
+branches merge. Carry that forward as a merge-order requirement rather than a test:
+
+> Merge the four submodule branches with a real merge commit or a fast-forward, **or**
+> re-bump the four gitlinks to the post-merge `main` SHAs in the same change that merges
+> them. A squash or rebase merge plus GitHub's "automatically delete head branches" leaves
+> the recorded SHA unreferenced.
+
+Merging those four repositories is a maintainer decision and is deliberately **not** a
+step in this plan. Surface the requirement at handoff; do not merge them unprompted.
 
 - [ ] **Step 4: Review the full diff**
 
