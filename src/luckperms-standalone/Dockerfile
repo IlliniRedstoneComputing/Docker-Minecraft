@@ -1,3 +1,4 @@
 FROM ghcr.io/luckperms/rest-api:latest
 
-COPY Initialization-1.0-SNAPSHOT.jar ./data/extensions/
+# The permission model is applied by the luckperms-init service from
+# src/luckperms-init/permissions.yml, not by a compiled extension.
