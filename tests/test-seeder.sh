@@ -264,9 +264,15 @@ DEPLOY=$(docker compose logs --no-log-prefix luckperms-init 2>/dev/null)
 assert_contains "$DEPLOY" "changed=" "the compose service ran to completion"
 assert_not_contains "$DEPLOY" "INCOMPLETE" "the compose service did not fail partway"
 
-GROUPS=$(api "$BASE/luckperms/group")
+# GROUP_LIST, not GROUPS. Bash keeps GROUPS as a special array holding the
+# current user's group IDs and silently IGNORES assignments to it, so
+# `GROUPS=$(api ...)` leaves $GROUPS expanding to a numeric gid -- measured
+# here as 197609. The assertions then fail against a haystack that is wrong
+# but NOT empty, which is the one shape assert_contains' empty-haystack guard
+# cannot catch. Do not rename this back.
+GROUP_LIST=$(api "$BASE/luckperms/group")
 for g in default onboarder member admin; do
-  assert_contains "$GROUPS" "\"$g\"" "group $g exists"
+  assert_contains "$GROUP_LIST" "\"$g\"" "group $g exists"
 done
 
 # A track is ORDERED; a set-equal check would pass on a scrambled ladder.
