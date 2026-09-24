@@ -28,6 +28,13 @@ services:
     # already had it, rather than marking every file +x. Verified on this tree:
     # the Fabric jars stay -rw-rw---- while 305 already-executable files keep
     # it. Measured cost of the recursive pass: 2142 inodes, under a second.
+    #
+    # Migrating an EXISTING deployment has one ordering hazard: a service
+    # still running as root can flush state to disk after this container has
+    # already chowned the tree, leaving files uid 1000 cannot write. Hit once,
+    # by mchprs writing a plot on shutdown. A normal `up` is unaffected, since
+    # this runs to completion before any server starts. To heal it, stop the
+    # offending service and recreate this one.
     command: >
       sh -c "mkdir -p /mnt/data/velocity /mnt/data/lobby /mnt/data/survival
       /mnt/data/onboarding /mnt/data/mchprs /mnt/data/project-0
