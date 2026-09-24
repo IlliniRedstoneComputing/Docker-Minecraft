@@ -14,6 +14,7 @@ DB_PASS=$(grep -E '^LUCKPERMS_DB_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
 DB_NAME=$(grep -E '^LUCKPERMS_DB=' .env | cut -d= -f2- | tr -d '\r')
 
 [ -n "$SECRET" ] || bail "LUCKPERMS_SECRET is empty or missing from .env"
+[ -n "$DB_NAME" ] || bail "LUCKPERMS_DB is empty or missing from .env"
 
 BASE="http://caddy:80"
 
