@@ -4533,19 +4533,49 @@ Create `tests/run-all.sh`:
 # Run every test suite. Requires the stack to be running.
 cd "$(dirname "$0")/.." || exit 1
 
+# Collect the suites up front. An unmatched glob stays literal in bash, so
+# testing the first element for existence is what separates "no suites at all"
+# from "a suite that happens to be named tests/test-*.sh". Checking here rather
+# than inside the loop is deliberate: a per-iteration guard abandons every
+# suite after the first unreadable one AND reports "no test suites found",
+# which is both a false message and silent loss of coverage.
+suites=(tests/test-*.sh)
+[ -e "${suites[0]}" ] || { echo "no test suites found in tests/"; exit 1; }
+
 FAILED=""
 RAN=0
-for suite in tests/test-*.sh; do
-  # An unmatched glob stays literal in bash, so with no suites present this
-  # loop would run once with suite='tests/test-*.sh' and report a confusing
-  # "No such file or directory" instead of the obvious thing. Say it plainly.
-  [ -r "$suite" ] || { echo "no test suites found in tests/"; exit 1; }
+for suite in "${suites[@]}"; do
   echo
   echo "=============================================================="
   echo "$suite"
   echo "=============================================================="
   RAN=$((RAN + 1))
-  bash "$suite" || FAILED="$FAILED $suite"
+
+  out=$(mktemp)
+  bash "$suite" 2>&1 | tee "$out"
+  rc=${PIPESTATUS[0]}
+
+  # Exit status alone is not enough to judge a suite. In tests/lib.sh, fail()
+  # returns 0 and only appends to a log; finish() is the one thing that turns
+  # recorded failures into a non-zero exit. So a suite that prints FAIL lines
+  # and then dies -- or is simply written without a trailing finish -- exits 0
+  # and would be counted here as a pass. lib.sh's own header says a test that
+  # passes when it should fail is worse than no test at all; this keeps that
+  # true across the process boundary. bail() exits 1 and is unaffected.
+  if [ "$rc" -eq 0 ] && ! grep -qE '^[0-9]+ run, [0-9]+ failed$' "$out"; then
+    echo "  (exited 0 without reaching finish -- treating as a failure)"
+    rc=1
+  fi
+  rm -f "$out"
+
+  # Record the exit code, not just the name. rc=1 is an ordinary assertion
+  # failure (or the missing-finish case above); anything else is not, and
+  # collapsing them all to "this suite failed" sends you hunting in the wrong
+  # file. 130 means the suite was interrupted. Note that a bad shebang does
+  # NOT show up as 126/127 here -- `bash "$suite"` reads the file itself, so
+  # the shebang line is just a comment, and such a suite exits 0 and is caught
+  # by the finish check instead. Measured both ways.
+  [ "$rc" -eq 0 ] || FAILED="$FAILED $suite(rc=$rc)"
 done
 
 echo
@@ -4570,16 +4600,37 @@ state, since AGENTS.md item 4 marks the `survival`, `project-0`, `project-1`
 and `mchprs` worlds player-owned, and no backup exists unless `backup.config`
 has been created.
 
+**This guard must not probe `mchprs` for `playerdata`.** MCHPRS does not store
+one. Measured in the volume, `/m/mchprs/world` holds `players`, `plots` and
+`plots.db` and no `playerdata` directory at all — so the obvious one-loop
+version prints `mchprs playerdata=0` unconditionally, whatever is in there,
+and the one server AGENTS.md item 4 calls player-owned is the one the guard
+cannot see. The same shape hides a second failure: `ls ... 2>/dev/null | wc -l`
+prints `0` both for "empty" and for "that path does not exist", so any probe
+that silently stops being correct reads as "safe to destroy".
+
 ```bash
-docker run --rm -v irc-minecraft_managed-files:/m alpine:latest sh -c \
-  'for s in survival project-0 project-1 mchprs onboarding; do
-     printf "%s playerdata=%s\n" "$s" "$(ls /m/$s/world/playerdata 2>/dev/null | wc -l)"
-   done'
+docker run --rm -v irc-minecraft_managed-files:/m alpine:latest sh -c '
+  for s in survival project-0 project-1 onboarding; do
+    d=/m/$s/world/playerdata
+    [ -d "$d" ] || { printf "%s playerdata=MISSING-DIR\n" "$s"; continue; }
+    printf "%s playerdata=%s\n" "$s" "$(ls "$d" | wc -l)"
+  done
+  printf "mchprs players=%s plots=%s plots.db=%s\n" \
+    "$(ls /m/mchprs/world/players 2>/dev/null | wc -l)" \
+    "$(ls /m/mchprs/world/plots 2>/dev/null | wc -l)" \
+    "$([ -s /m/mchprs/world/plots.db ] && echo present || echo absent)"'
 ```
 
-Expected before proceeding: `playerdata=0` everywhere. A non-zero count means a
-player has joined and the volume holds the only copy of their state — stop and
-take a backup rather than running `down -v`.
+Expected before proceeding: `playerdata=0` for the four Fabric servers, and
+`players=0 plots=0` for mchprs. `plots.db=present` is normal on a virgin
+server and is not evidence of player state.
+
+Any other reading stops the step. A non-zero count means a player has joined
+and the volume holds the only copy of their state. `MISSING-DIR` means the
+probe is looking in the wrong place — which is not the same as "nothing there"
+and must never be read as permission to proceed. In either case, take a backup
+rather than running `down -v`.
 
 ```bash
 docker compose -f compose.yml down -v
@@ -4611,20 +4662,37 @@ under-wait, and it finishes as soon as the stack is actually ready.
 
 ```bash
 # wait_healthy "<services>" [timeout-seconds]
+#
 # Only pass services that HAVE a healthcheck. For one that does not, the
-# .State.Health template errors, the status reads empty, and this would spin
-# until the deadline. Healthchecked here: luckperms-db and luckperms-standalone
-# declare their own, and the six Minecraft servers inherit `mc-health` from
-# their base images (AGENTS.md item 2). mchprs, webdav, caddy and backup
-# declare none.
+# status reads `none`, it never leaves the pending set, and this spins until
+# the deadline. Healthchecked here: luckperms-db and luckperms-standalone
+# declare their own; the FIVE Minecraft servers inherit `mc-health` from
+# itzg/mc-server, and velocity separately inherits `health.sh` from
+# itzg/mc-proxy. Those are two different inherited checks -- AGENTS.md item 2
+# exists because this repository has already blurred that distinction twice.
+# mchprs, webdav, caddy and backup declare none.
+#
+# `ps -aq`, not `ps -q`: a bare `ps -q` returns nothing for an exited
+# container, which makes a server that crashed on boot indistinguishable from
+# one still starting, and burns the whole timeout waiting for a container that
+# is already dead. Resolving with -a and reading .State.Status alongside the
+# health lets this give up immediately instead -- which is the point, since
+# the reason for waiting at all is to keep Step 3 off a half-started stack,
+# and "exited" is the loudest form of half-started there is.
 wait_healthy() {
+  local deadline pending svc cid info
   deadline=$(( $(date +%s) + ${2:-900} ))
   while :; do
     pending=""
     for svc in $1; do
-      cid=$(docker compose ps -q "$svc")
-      st=$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null)
-      [ "$st" = healthy ] || pending="$pending $svc"
+      cid=$(docker compose ps -aq "$svc" 2>/dev/null)
+      [ -n "$cid" ] || { echo "NOT CREATED: $svc"; return 2; }
+      info=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid")
+      case "$info" in
+        exited*|dead*) echo "GAVE UP: $svc is ${info%% *}"; return 1 ;;
+        *" healthy")   ;;
+        *)             pending="$pending $svc" ;;
+      esac
     done
     [ -z "$pending" ] && { echo "healthy:$1"; return 0; }
     if [ "$(date +%s)" -ge "$deadline" ]; then
@@ -4634,9 +4702,12 @@ wait_healthy() {
   done
 }
 
-wait_healthy "luckperms-db luckperms-standalone velocity survival"
-docker compose -f compose.yml up -d --build lobby onboarding project-0 project-1
-wait_healthy "lobby onboarding project-0 project-1"
+# Chained with && so a timeout or a dead container stops the sequence. Run as
+# three separate statements, a failed wait just scrolls past and the next `up`
+# proceeds against a stack that is not ready.
+wait_healthy "luckperms-db luckperms-standalone velocity survival" \
+  && docker compose -f compose.yml up -d --build lobby onboarding project-0 project-1 \
+  && wait_healthy "lobby onboarding project-0 project-1"
 ```
 
 `luckperms-init` needs its own wait. It is a `restart: "no"` one-shot, and
@@ -4766,9 +4837,12 @@ Expected: no connection errors. MCHPRS connects to `luckperms-db` on the default
 Confirm the data MCHPRS reads is actually present:
 
 ```bash
-DB_USER=$(grep -E '^LUCKPERMS_DB_USER=' .env | cut -d= -f2-)
-DB_PASS=$(grep -E '^LUCKPERMS_DB_PASSWORD=' .env | cut -d= -f2-)
-DB_NAME=$(grep -E '^LUCKPERMS_DB=' .env | cut -d= -f2-)
+# All three keys sit on CRLF lines in .env -- same reason as Step 4, and the
+# same `| tr -d '\r'` the earlier tasks use. This is the only place in the
+# plan that was missing it.
+DB_USER=$(grep -E '^LUCKPERMS_DB_USER=' .env | cut -d= -f2- | tr -d '\r')
+DB_PASS=$(grep -E '^LUCKPERMS_DB_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
+DB_NAME=$(grep -E '^LUCKPERMS_DB=' .env | cut -d= -f2- | tr -d '\r')
 docker compose exec -T luckperms-db mariadb -u"$DB_USER" -p"$DB_PASS" -N -B \
   -e "SELECT name, permission, server FROM luckperms_group_permissions ORDER BY name;" "$DB_NAME"
 ```
@@ -4785,10 +4859,19 @@ reached the table MCHPRS reads directly.
 - [ ] **Step 6: Verify the only published port**
 
 ```bash
-docker compose ps --format '{{.Service}} {{.Ports}}' | grep -E '0\.0\.0\.0|:::'
+docker compose ps --format '{{.Service}} {{.Ports}}' | grep -F -- '->'
 ```
 
 Expected: exactly one line, for `velocity`, showing `25565`.
+
+Match on `->` rather than on `0.0.0.0`. A published port is the only thing
+that renders an arrow — an exposed-but-unpublished port prints as bare
+`25565/tcp` — whereas an address-matching pattern misses any publish bound to
+a specific host IP, such as `127.0.0.1:8080->80/tcp`, which is exactly the
+kind of line a check whose whole job is "25565 is the only published port"
+must not let through. (The earlier pattern also carried a `:::` alternative
+that matches nothing: current Docker renders the v6 binding as
+`[::]:25565->25565/tcp`.)
 
 - [ ] **Step 7: Restore the production heap setting**
 
