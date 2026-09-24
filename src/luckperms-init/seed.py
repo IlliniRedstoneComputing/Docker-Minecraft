@@ -10,6 +10,11 @@ Operationally that means any change an admin makes in-game to a managed group
 `docker compose up`. That is the intended design, not a bug. Edit
 permissions.yml, not the live server, for anything that should survive a deploy.
 
+The same rule applies within the file: a group listed with an empty spec means
+"this group has no nodes", not "leave this group alone". Commenting out a
+group's `permissions:` block while debugging therefore deletes those nodes on
+the next run. Delete the whole group entry to stop managing it instead.
+
 The script is idempotent. It compares desired state against actual state and
 only writes when they differ, then reports how many changes it made, so a
 second run reports changed=0.
@@ -60,6 +65,14 @@ def check_keys(where, mapping, allowed):
     unknown = sorted(set(mapping) - allowed)
     if unknown:
         sys.exit(f"{where}: unknown key(s) {unknown}; allowed are {sorted(allowed)}")
+
+
+def as_int(value, where):
+    """int() with a message instead of a traceback."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        sys.exit(f"{where}: expected a whole number, got {value!r}")
 
 
 def request(method, path, body=None):
@@ -147,8 +160,8 @@ def build_context(raw, where):
     return out
 
 
-def check_mchprs_prefixes(group_name, nodes):
-    """Reject a stored mchprs.* node that is a strict prefix of another.
+def check_mchprs_prefixes(where, keys):
+    """Reject a stored mchprs node that is a strict prefix of another.
 
     MCHPRS reads this database directly, and per AGENTS.md its
     PermissionNode::matches indexes the stored node's path while walking the
@@ -161,22 +174,55 @@ def check_mchprs_prefixes(group_name, nodes):
     elsewhere -- `essentials.home` alongside `essentials.home.other` is fine --
     and only MCHPRS crashes on it.
 
-    This catches the mistake that is visible from the model alone, both keys
-    present. It CANNOT catch a lone stored `mchprs.command` whose queried form
-    `mchprs.command.tp` exists only in MCHPRS's source, so AGENTS.md's rule --
-    exact keys or explicit `*` wildcards -- still governs when writing a model.
+    This catches the mistake that is visible from the model, both keys present
+    somewhere in one player's effective set. It CANNOT catch a lone stored
+    `mchprs.command` whose queried form `mchprs.command.tp` exists only in
+    MCHPRS's source, so AGENTS.md's rule -- exact keys or explicit `*`
+    wildcards -- still governs when writing a model.
     """
-    keys = sorted({node["key"] for node in nodes if node["key"].startswith("mchprs.")})
-    for shorter in keys:
+    # A key of exactly `mchprs` is in scope too: it is a strict prefix of every
+    # mchprs.* key there is, and `startswith("mchprs.")` alone would miss it.
+    scoped = sorted(k for k in keys if k == "mchprs" or k.startswith("mchprs."))
+    for shorter in scoped:
         if shorter.endswith("*"):
             continue
-        for longer in keys:
+        for longer in scoped:
             if longer != shorter and longer.startswith(shorter + "."):
                 sys.exit(
-                    f"group '{group_name}': '{shorter}' is a strict prefix of "
-                    f"'{longer}', which panics MCHPRS. Use '{shorter}.*' or "
-                    f"drop one of the two."
+                    f"{where}: '{shorter}' is a strict prefix of '{longer}', "
+                    f"which panics MCHPRS. Use '{shorter}.*' or drop one."
                 )
+
+
+def check_mchprs_closure(desired, inherits_of):
+    """Run the prefix check over each group's inheritance closure.
+
+    Per group is not enough, because MCHPRS resolves inheritance and the nodes
+    from several groups land in one effective set. A `default` holding
+    `mchprs.command` and an `admin` holding `group.default` plus
+    `mchprs.command.tp` is a panic waiting to happen, with neither group
+    tripping a per-group check on its own. The model this repository ships is
+    one long inheritance chain, so that is the shape the mistake will take.
+
+    The closure covers groups the model defines. A parent inherited from
+    outside the model -- the ad-hoc escape hatch -- is invisible here. That is
+    a limit worth knowing, not a reason to skip the check.
+    """
+    for name in desired:
+        keys = set()
+        seen = set()
+        stack = [name]
+        while stack:
+            current = stack.pop()
+            if current in seen or current not in desired:
+                continue
+            seen.add(current)
+            keys.update(node["key"] for node in desired[current])
+            stack.extend(inherits_of.get(current, ()))
+        label = f"group '{name}'"
+        if len(seen) > 1:
+            label += f" (with what it inherits: {', '.join(sorted(seen - {name}))})"
+        check_mchprs_prefixes(label, keys)
 
 
 def build_nodes(group_name, spec):
@@ -195,14 +241,17 @@ def build_nodes(group_name, spec):
 
     weight = spec.get("weight")
     if weight is not None:
-        nodes.append({"key": f"weight.{int(weight)}", "value": True, "context": []})
+        weight = as_int(weight, f"group '{group_name}' weight")
+        nodes.append({"key": f"weight.{weight}", "value": True, "context": []})
 
     prefix = spec.get("prefix")
     if prefix is not None:
         # Priority defaults to the group's own weight, so a heavier group's
         # prefix wins without having to say so twice; `weight or 0` also maps
         # an absent weight onto priority 0.
-        priority = int(spec.get("prefix_priority", weight or 0))
+        priority = as_int(
+            spec.get("prefix_priority", weight or 0), f"group '{group_name}' prefix_priority"
+        )
         nodes.append({"key": f"prefix.{priority}.{prefix}", "value": True, "context": []})
 
     for parent in spec.get("inherits", []) or []:
@@ -228,10 +277,11 @@ def build_nodes(group_name, spec):
             ),
         }
         if "expiry" in entry:
-            node["expiry"] = int(entry["expiry"])
+            node["expiry"] = as_int(
+                entry["expiry"], f"group '{group_name}' permission '{entry['key']}' expiry"
+            )
         nodes.append(node)
 
-    check_mchprs_prefixes(group_name, nodes)
     return nodes
 
 
@@ -299,6 +349,14 @@ def apply_group_nodes(name, desired):
                 f"missing={sorted(repr(i) for i in want - settled)} "
                 f"unexpected={sorted(repr(i) for i in settled - want)}"
             )
+    else:
+        # Not fatal -- the write itself succeeded -- but say so, or the check
+        # above disappears silently the day the response shape changes.
+        print(
+            f"warning: group '{name}' PUT returned {type(body).__name__} rather "
+            f"than a list, so convergence was not verified",
+            file=sys.stderr,
+        )
 
 
 def apply_track(name, groups):
@@ -329,6 +387,20 @@ def apply_track(name, groups):
     print(f"track {name}: set to {groups}")
     changes += 1
 
+    # PATCH answers with the bare string `ok`, so convergence needs a re-read
+    # rather than a look at the response. Worth the extra GET: a track's payload
+    # is a list of group NAMES, and names are exactly what gets normalized.
+    # Measured -- PATCH ["Admin","Member"] reads back ["admin","member"] -- so
+    # without this, a mixed-case member would rewrite the same track on every
+    # deploy while exiting 0. NAME_RE rejects that case before we get here;
+    # this catches whatever normalization comes next.
+    status, settled = request("GET", f"/track/{seg(name)}")
+    if status == 200 and isinstance(settled, dict) and settled.get("groups") != groups:
+        sys.exit(
+            f"track '{name}' did not converge: sent {groups}, stored "
+            f"{settled.get('groups')}"
+        )
+
 
 def push_messaging():
     """Tell connected servers to reload.
@@ -341,6 +413,61 @@ def push_messaging():
         print(f"warning: messaging update returned HTTP {status} {body}", file=sys.stderr)
     else:
         print("pushed update to connected servers")
+
+
+def check_reference_names(groups, tracks):
+    """Validate the names a group or track REFERS to, not just the ones it defines.
+
+    Measured: an inheritance node is lowercased in transit -- PUT `group.Member`
+    reads back `group.member` -- and so is a track member. So a mixed-case
+    reference can never match what was sent, and without this the run would die
+    in the convergence backstop with a message about identity tuples instead of
+    pointing at the line that is wrong.
+    """
+    for name, spec in groups.items():
+        for parent in (spec or {}).get("inherits") or []:
+            if not NAME_RE.match(str(parent)):
+                sys.exit(
+                    f"group '{name}' inherits '{parent}', which must match "
+                    f"{NAME_RE.pattern} -- inheritance nodes are lowercased in "
+                    f"transit, so this could never converge"
+                )
+    for name, spec in tracks.items():
+        for member in spec.get("groups") or []:
+            if not NAME_RE.match(str(member)):
+                sys.exit(
+                    f"track '{name}' lists '{member}', which must match "
+                    f"{NAME_RE.pattern} -- track members are lowercased in transit"
+                )
+
+
+def check_references_exist(desired, wanted_tracks, inherits_of, existing_names):
+    """Every inherited parent and track member must name a group that exists.
+
+    Checked against the model's own groups PLUS what the server already has,
+    because inheriting a group this file does not manage is the documented
+    escape hatch rather than an error.
+
+    This is the half NAME_RE cannot see: `inherits: [membr]` is lowercase and
+    well formed, so it sails through, stores a dangling `group.membr`, and is
+    then perfectly idempotent -- changed=0 forever, while the player inherits
+    nothing at all.
+    """
+    known = set(desired) | set(existing_names)
+    for name in sorted(inherits_of):
+        for parent in inherits_of[name]:
+            if parent not in known:
+                sys.exit(
+                    f"group '{name}' inherits '{parent}', which is neither "
+                    f"defined in {MODEL_PATH} nor present on the server"
+                )
+    for name in sorted(wanted_tracks):
+        for member in wanted_tracks[name]:
+            if member not in known:
+                sys.exit(
+                    f"track '{name}' lists '{member}', which is neither defined "
+                    f"in {MODEL_PATH} nor present on the server"
+                )
 
 
 def load_model():
@@ -365,6 +492,9 @@ def load_model():
     groups = model.get("groups")
     if not isinstance(groups, dict) or not groups:
         sys.exit(f"{MODEL_PATH} must define a non-empty 'groups' mapping")
+    for name, spec in groups.items():
+        if spec is not None and not isinstance(spec, dict):
+            sys.exit(f"group '{name}': spec must be a mapping, got {type(spec).__name__}")
 
     tracks = model.get("tracks") or {}
     if not isinstance(tracks, dict):
@@ -383,16 +513,22 @@ def load_model():
                     f"rejected outright or break the request URL"
                 )
 
+    check_reference_names(groups, tracks)
     return groups, tracks
 
 
 def main():
     groups, tracks = load_model()
 
-    # Expand every group BEFORE the first write, so a model error cannot leave
+    # Expand everything BEFORE the first write, so a model error cannot leave
     # the database half-applied.
     desired = {name: build_nodes(name, spec or {}) for name, spec in groups.items()}
     wanted_tracks = {name: list(spec.get("groups") or []) for name, spec in tracks.items()}
+    inherits_of = {
+        name: [str(p) for p in ((spec or {}).get("inherits") or [])]
+        for name, spec in groups.items()
+    }
+    check_mchprs_closure(desired, inherits_of)
 
     wait_for_api()
 
@@ -400,8 +536,10 @@ def main():
     if status != 200:
         sys.exit(f"failed to list groups: HTTP {status} {existing}")
     existing_names = set(existing or [])
+    check_references_exist(desired, wanted_tracks, inherits_of, existing_names)
 
     complete = False
+    failure = None
     try:
         for name, nodes in desired.items():
             ensure_group(name, existing_names)
@@ -409,7 +547,15 @@ def main():
         for name, order in wanted_tracks.items():
             apply_track(name, order)
         complete = True
+    except SystemExit as exc:
+        failure = exc.code
     finally:
+        # Print the cause before the summary. The finally would otherwise run
+        # ahead of SystemExit's own message, leaving the log reading
+        # "INCOMPLETE" first and the reason for it afterwards -- and the tail of
+        # the log is what gets pasted into a bug report.
+        if failure is not None:
+            print(failure, file=sys.stderr)
         # Push whatever DID land, even when a later group failed. Otherwise a
         # persistent failure on one group strands every earlier group's writes
         # in the database, invisible to running servers, and it never
@@ -421,8 +567,11 @@ def main():
             print(f"changed={changes}")
         else:
             # Deliberately NOT a `changed=` line. A failed run must not be able
-            # to satisfy a log check looking for `changed=0`.
+            # to satisfy a log check looking for changed=0.
             print(f"INCOMPLETE -- failed after {changes} change(s)", file=sys.stderr)
+
+    if failure is not None:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
