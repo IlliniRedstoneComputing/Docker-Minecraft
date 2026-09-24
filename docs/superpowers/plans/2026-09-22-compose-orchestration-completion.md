@@ -3107,6 +3107,41 @@ git commit -m "test: probe whether the luckperms api accepts hyphenated contexts
 
 ## Task 14: The seeder
 
+**The REST API contract this task depends on is measured, not assumed.** Probed against
+the running stack before the task was dispatched, on `http://luckperms-standalone:8080`:
+
+```
+GET    /health                  200  {"healthy":true,"details":{"storageConnected":true,...}}
+GET    /group                   200  ["onboarder","default","member","admin"]
+POST   /group {"name":X}        201  {"name":X,"weight":0,"nodes":[],...}
+POST   /group {"name":X} again  409  Group already exists!
+GET    /group/X/nodes           200  []
+PUT    /group/X/nodes [...]     200  returns the resulting node list
+GET    /track/nosuchtrack       404  Track doesn't exist
+POST   /track {"name":T}        201  {"name":T,"groups":[]}
+GET    /track/T                 200  {"name":T,"groups":[...]}
+PATCH  /track/T {"groups":[..]} 200  ok
+POST   /messaging/update        202  ok
+```
+
+Four of those results are load-bearing for the code below. Do not "simplify" them away.
+
+- **`PUT /group/X/nodes` replaces the node set wholesale.** Verified by writing four
+  nodes, then writing one, and reading back exactly one. That is what makes the model
+  authoritative for the groups it names, and what makes `apply_group_nodes` safe to skip
+  when the two sets already match.
+- **Node type is derived from the key and is never sent.** `weight.100`,
+  `prefix.100.&c[A] `, `group.default` and `test.alpha` read back as types `weight`,
+  `prefix`, `inheritance` and `permission`. A `type` field in the request is unnecessary.
+- **`GET` omits `expiry` entirely on a non-expiring node**, which is why `node_identity`
+  compares `node.get("expiry")` instead of requiring the key on both sides.
+- **`PATCH /track/T` and `POST /messaging/update` return the bare string `ok`, not
+  JSON.** `request()` must tolerate a non-JSON body; that is what its
+  `json.JSONDecodeError` fallback is for.
+
+`POST /group` answering 409 on a duplicate is what `ensure_group` swallows, and
+`GET /track/T` answering 404 rather than 200-with-null is what `apply_track` branches on.
+
 **Files:**
 - Create: `src/luckperms-init/Dockerfile`
 - Create: `src/luckperms-init/seed.py`
@@ -3127,6 +3162,23 @@ FROM ghcr.io/luckperms/rest-api:latest
 # The permission model is applied by the luckperms-init service from
 # src/luckperms-init/permissions.yml, not by a compiled extension.
 ```
+
+**Keep that file CRLF.** It is CRLF today (`git ls-files --eol` reports `i/crlf w/crlf`),
+as are `src/mchprs/Dockerfile` and `src/velocity/Dockerfile`. There is no repo-wide
+convention to appeal to here -- `src/survival/Dockerfile` is LF -- so preserving what the
+file already has is the choice that adds no unrelated change to the diff. The hazard is
+that a bash heredoc writes LF silently, which is exactly the accident the CRLF section of
+`AGENTS.md` exists to warn about. Use `perl -i -pe`, or write the file and then check it.
+The replacement is four CRLF-terminated lines, so both counts are 4 -- not the 2/2
+the current three-line, newline-less file reports:
+
+```bash
+tr -cd '\r' < src/luckperms-standalone/Dockerfile | wc -c   # expect 4
+tr -cd '\n' < src/luckperms-standalone/Dockerfile | wc -c   # expect 4
+```
+
+Both new files in this task (`src/luckperms-init/Dockerfile` and `seed.py`) are LF, which
+matches everything else added on this branch.
 
 - [ ] **Step 2: Write the seeder image**
 
@@ -3354,7 +3406,33 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Verify the image builds and the seeder compiles**
+
+Nothing wires the seeder into the stack until Task 16, so without this step the only
+thing this task checks is that it committed. Two failures would otherwise surface two
+tasks later, attached to the wrong change: a syntax error in `seed.py`, and `PyYAML`
+turning out to need a compiler on Alpine.
+
+```bash
+docker build -t luckperms-init-check ./src/luckperms-init
+docker run --rm --entrypoint python3 luckperms-init-check -m py_compile /seed.py
+docker run --rm --entrypoint python3 luckperms-init-check -c "import yaml; print(yaml.__version__)"
+```
+
+Expected: the build succeeds, `py_compile` prints nothing and exits 0, and the last
+command prints `6.0.2`. `PyYAML==6.0.2` publishes musllinux wheels for CPython 3.12, so
+no compiler is needed -- confirmed by running that `pip install` on `python:3.12-alpine`.
+
+This is a build check, not a run: the seeder needs a `permissions.yml` that Task 15 has
+not written yet, so do not try to execute it.
+
+Then drop the throwaway tag:
+
+```bash
+docker image rm luckperms-init-check
+```
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/luckperms-init/Dockerfile src/luckperms-init/seed.py src/luckperms-standalone/Dockerfile
@@ -3526,6 +3604,14 @@ In `compose.yml`, add immediately after the `luckperms-standalone` service:
 - [ ] **Step 2: Add failing idempotency assertions**
 
 In `tests/test-seeder.sh`, insert immediately before the `finish` line:
+
+**This snippet is stale and must be adapted, not transcribed.** It calls
+`api GET /group`, the method-and-path helper from the ORIGINAL Task 13 block. The
+`tests/test-seeder.sh` that now exists defines `api()` as a passthrough for curl
+arguments -- `api "$BASE/luckperms/group"`, with `$BASE` already set and the bearer token
+supplied from a curl config on stdin. Read the helper in the file before writing any of
+this, and match it. The `| head -n1` calls below exist only to strip the old helper's
+appended status-code line and should go away with it.
 
 ```bash
 echo "seeder"
