@@ -2570,17 +2570,27 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=lib.sh
 . tests/lib.sh
 
-# tr -d '\r' on every one of these: .env is a mixed-ending file -- CRLF
-# throughout except the JAVA_OPTS line appended in Step 2 (CR=28, LF=30). Git
-# Bash's grep opens in text mode and strips the CR by accident, so this looks
-# unnecessary here and is not -- the same script on Linux keeps the CR, and a
-# trailing CR inside a bearer token produces a 401 that reads like a wrong
-# password rather than a line-ending bug. tests/test-webdav.sh omits this and
-# survives only because of that Git Bash accident; worth backporting.
+# Name a missing prerequisite once, rather than letting it surface as a 401 and
+# a cascade of unrelated-looking failures. Same precedent as the
+# `[ -r compose.yml ] || bail` in tests/test-compose-config.sh.
+[ -r .env ] || bail ".env is not readable from $(pwd)"
+
+# tr -d '\r' on every one of these: .env is a mixed-ending file. Measured
+# CR=28, LF=30 -- two lines carry no CR, CLOUDFLARE_TUNNEL_TOKEN and JAVA_OPTS,
+# and every other line is CRLF. LUCKPERMS_SECRET is one of the CRLF lines,
+# which is what makes this load-bearing. Git Bash's grep opens in text mode and
+# strips the CR by accident, so the guard looks unnecessary here and is not:
+# the same script on Linux keeps the CR, and a trailing CR inside a bearer
+# token produces a 401 that reads like a wrong password rather than a
+# line-ending bug. tests/test-webdav.sh omits this and survives only because of
+# that Git Bash accident -- recorded as deferral 5 under Task 19 Step 2b.
 SECRET=$(grep -E '^LUCKPERMS_SECRET=' .env | cut -d= -f2- | tr -d '\r')
 DB_USER=$(grep -E '^LUCKPERMS_DB_USER=' .env | cut -d= -f2- | tr -d '\r')
 DB_PASS=$(grep -E '^LUCKPERMS_DB_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
 DB_NAME=$(grep -E '^LUCKPERMS_DB=' .env | cut -d= -f2- | tr -d '\r')
+
+[ -n "$SECRET" ] || bail "LUCKPERMS_SECRET is empty or missing from .env"
+[ -n "$DB_NAME" ] || bail "LUCKPERMS_DB is empty or missing from .env"
 
 BASE="http://caddy:80"
 
@@ -2601,11 +2611,21 @@ api() {
 lp() { api "$BASE/luckperms$1"; }
 
 # The suite writes a real group into the shared database. Delete it both before
-# and after, so an interrupted run cannot poison the next one. The trap covers
-# the ordinary interrupted run; the explicit call below covers what a trap
-# cannot -- a previous run killed by SIGKILL, where no handler fired at all.
-# $$ is unique among live processes but PIDs recycle, and against a leftover
-# group of the same name the POST becomes an update rather than a create.
+# and after, so an interrupted run cannot poison the next one.
+#
+# Be precise about what the pre-run delete buys, because the obvious reading is
+# too generous. It removes `msgtest$$` and nothing else, so against a run
+# killed by SIGKILL -- where no EXIT handler fires at all -- it reclaims the
+# leaked group ONLY if this run happens to draw the same PID. A SIGKILLed run
+# therefore leaks one `msgtest<pid>` group carrying a `test.probe` node into
+# the shared database, and nothing here sweeps it up. That is accepted rather
+# than solved: sweeping everything matching `^msgtest[0-9]+$` would delete a
+# concurrently running copy's group out from under it, trading a rare harmless
+# leak for a confusing failure.
+#
+# The trap covers the ordinary interrupted run, which is the common case, and
+# the pre-run call also covers the PID-reuse collision, where the POST would
+# otherwise become an update rather than a create.
 #
 # GROUP is named here, above the trap, so the handler is never installed with
 # nothing to delete. A 404 from the pre-run delete is expected and ignored.
@@ -2655,13 +2675,30 @@ for svc in velocity survival lobby onboarding project-0 project-1; do
 done
 
 # No server may have fallen back to a local H2 database.
+#
+# Assert on the RAW directory listing and let assert_not_contains fail on an
+# empty haystack. The obvious form is a false-pass generator:
+#
+#   H2=$(... 'ls /data/config/luckperms/ 2>/dev/null | grep -i "\.mv\.db" || echo NONE')
+#   assert_eq "$H2" "NONE" ...
+#
+# because it manufactures the PASS sentinel out of a FAILED listing. Measured
+# on the running stack: a nonexistent directory returns `NONE` byte for byte
+# identically to a clean one, so a LuckPerms version that relocates its data
+# folder, a renamed service, or a plugin that never loaded would silently turn
+# all six of these into permanent passes. lib.sh documents a guard for exactly
+# this class on assert_not_contains, and the `|| echo NONE` form routes around
+# it. The raw listing separates the cases: 2 entries versus 0.
+#
+# tr provides the case-insensitivity grep -i was doing, the same way
+# test-compose-config.sh lowercases before its own checks.
 for svc in survival lobby onboarding project-0 project-1; do
-  H2=$(docker compose exec -T "$svc" sh -c 'ls /data/config/luckperms/ 2>/dev/null | grep -i "\.mv\.db" || echo NONE')
-  assert_eq "$H2" "NONE" "$svc created no H2 database"
+  LS=$(docker compose exec -T "$svc" sh -c 'ls -A /data/config/luckperms/ 2>/dev/null' | tr 'A-Z' 'a-z')
+  assert_not_contains "$LS" ".mv.db" "$svc created no H2 database"
 done
 
-VH2=$(docker compose exec -T velocity sh -c 'ls /server/plugins/luckperms/ 2>/dev/null | grep -i "\.mv\.db" || echo NONE')
-assert_eq "$VH2" "NONE" "velocity created no H2 database"
+VLS=$(docker compose exec -T velocity sh -c 'ls -A /server/plugins/luckperms/ 2>/dev/null' | tr 'A-Z' 'a-z')
+assert_not_contains "$VLS" ".mv.db" "velocity created no H2 database"
 
 # Messaging: a group created through the API must reach a running server
 # without restarting it.
@@ -2701,30 +2738,81 @@ assert_eq "$VH2" "NONE" "velocity created no H2 database"
 # false attribution is how the create was originally believed to ping at all.
 # Leave a quiet gap, and change one thing at a time.
 #
-# Count BEFORE and require the count to rise. A bare grep would pass on a ping
-# from earlier in the container's life and never fail.
-PINGS_BEFORE=$(docker compose logs survival 2>/dev/null | grep -c 'Received update ping')
+# Correlate by ping ID rather than by counting. A count that merely RISES is
+# satisfied by anyone else's ping: a concurrent copy of this suite, an admin
+# running an `lp` command on another node, or this script's own pre-run
+# lp_cleanup DELETE landing late. Given that the comment directly above records
+# a false attribution as the reason the create was ever believed to ping, a
+# design open to the same confusion does not belong here.
+#
+# The id appears on both sides and matches exactly. Verified on the stack:
+#   luckperms-standalone | [Messaging] Sending ping with id: 820d2c85-0dfe-...
+#   survival-server      | [Messaging] Received update ping with id: 820d2c85-0dfe-...
+#
+# This also splits two failures that the count conflates: no new `Sending` line
+# means the write never pushed, while `Sending` without `Received` means the
+# messenger itself is broken.
+SENT_BEFORE=$(docker compose logs luckperms-standalone 2>/dev/null \
+  | grep -o 'Sending ping with id: [0-9a-f-]*' | tail -1)
 
-api -o /dev/null -H 'Content-Type: application/json' \
-  -X POST -d "{\"name\":\"$GROUP\"}" "$BASE/luckperms/group"
+# Assert the writes SUCCEEDED before concluding anything about messaging. With
+# -o /dev/null and no status check, a 401 from a rotated secret or a 5xx from a
+# Caddy route change produces no ping, and the suite then reports "messaging is
+# broken" -- the exact misdiagnosis this block twice warns against.
+CODE_POST=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -X POST -d "{\"name\":\"$GROUP\"}" "$BASE/luckperms/group")
+assert_eq "$CODE_POST" "201" "the API created the test group"
 
-# The write that actually exercises the messenger.
-api -o /dev/null -H 'Content-Type: application/json' \
-  -X PUT -d '[{"key":"test.probe","value":true}]' "$BASE/luckperms/group/$GROUP/nodes"
+# The write that actually exercises the messenger. test.probe is deliberately
+# OUTSIDE the mchprs.* namespace: MCHPRS reads this same database directly, and
+# per AGENTS.md a stored node that is a strict prefix of a queried node panics
+# it with an index-out-of-bounds. Do not rename this to mchprs.test.
+CODE_PUT=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -X PUT -d '[{"key":"test.probe","value":true}]' "$BASE/luckperms/group/$GROUP/nodes")
+assert_eq "$CODE_PUT" "200" "the API wrote a node to the test group"
 
-FOUND=NO
-for _ in $(seq 1 30); do
-  PINGS_NOW=$(docker compose logs survival 2>/dev/null | grep -c 'Received update ping')
-  if [ "$PINGS_NOW" -gt "$PINGS_BEFORE" ]; then FOUND=YES; break; fi
+# --since bounds each rescan: container logs here have no max-size, so an
+# unbounded `docker compose logs` is re-read in full on every one of up to 45
+# polls, and grows without limit on a busy server.
+PING_ID=""
+for _ in $(seq 1 15); do
+  LATEST=$(docker compose logs --since 10m luckperms-standalone 2>/dev/null \
+    | grep -o 'Sending ping with id: [0-9a-f-]*' | tail -1)
+  if [ -n "$LATEST" ] && [ "$LATEST" != "$SENT_BEFORE" ]; then
+    PING_ID=${LATEST##* }
+    break
+  fi
   sleep 2
 done
-assert_eq "$FOUND" "YES" "a group written via the API pings survival without a restart"
+assert_contains "$PING_ID" "-" "the standalone dispatched a new ping for that write"
 
-# And the write itself must have landed in the shared database.
-GROUPS_SQL=$(docker compose exec -T luckperms-db \
-  mariadb -u"$DB_USER" -p"$DB_PASS" -N -B -e "SELECT name FROM luckperms_groups;" "$DB_NAME" 2>/dev/null)
-assert_contains "$GROUPS_SQL" "$GROUP" "the new group is present in the shared database"
+# The [ -n "$PING_ID" ] guard is load-bearing, not defensive noise: with an
+# empty PING_ID the grep pattern degrades to "Received update ping with id: ",
+# which matches EVERY ping ever logged and passes unconditionally. Confirmed by
+# running that exact unguarded grep.
+RECEIVED=NO
+if [ -n "$PING_ID" ]; then
+  for _ in $(seq 1 30); do
+    if docker compose logs --since 10m survival 2>/dev/null \
+       | grep -q "Received update ping with id: $PING_ID"; then
+      RECEIVED=YES; break
+    fi
+    sleep 2
+  done
+fi
+assert_eq "$RECEIVED" "YES" "survival received that exact ping without a restart"
 
+# And the write itself must have landed in the shared database. COUNT with an
+# exact match rather than assert_contains on a name list: a substring test
+# passes on a leftover msgtest12345 when GROUP is msgtest1234. Same reasoning
+# as the trailing colon in lib.sh's service_block, which keeps luckperms-db
+# from matching the luckperms-db-data volume.
+GROUP_COUNT=$(docker compose exec -T luckperms-db \
+  mariadb -u"$DB_USER" -p"$DB_PASS" -N -B \
+  -e "SELECT COUNT(*) FROM luckperms_groups WHERE name = '$GROUP';" "$DB_NAME" 2>/dev/null | tr -d '\r')
+assert_eq "$GROUP_COUNT" "1" "the new group is present in the shared database"
+
+# Cleanup also runs from the EXIT trap; this is belt and braces.
 lp_cleanup
 
 finish
