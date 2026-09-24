@@ -3905,7 +3905,16 @@ git commit -m "feat: add declarative luckperms seeder and retire the unsourced j
 **Files:**
 - Create: `src/luckperms-init/permissions.yml`
 
-> **Depends on Task 13.** If the context probe failed, remove every `context:` block referencing `project-0` or `project-1` from the file below and leave those nodes global.
+> **Task 13's gate is answered: per-server contexts ARE usable.** Hyphenated context
+> values such as `project-0` are accepted, persist to storage intact, and read back
+> unchanged, so nothing in this file is constrained by that question.
+>
+> Note that the model below does not actually use them. Its only context is
+> `server: mchprs`, which MCHPRS constraint 2 requires. Per-server access to the
+> project servers is gated by permission KEYS instead (`irc.server.project`), which
+> the proxy reads -- a different mechanism from LuckPerms contexts, and not something
+> Task 13's fallback would ever have applied to. The earlier instruction to strip
+> `context:` blocks referencing `project-0` was describing a file that does not exist.
 
 - [ ] **Step 1: Write the model**
 
@@ -3936,7 +3945,11 @@ Create `src/luckperms-init/permissions.yml`:
 #      Use exact keys or an explicit `*` wildcard -- never a partial path.
 #   2. Only `global` and `mchprs` server contexts are visible to it.
 #   3. Group membership must be an explicit `group.<name>` node on the user.
-#      MCHPRS never consults the primary-group table.
+#      MCHPRS never consults the primary-group table. In practice that means
+#      a player whose only membership is the `default` group LuckPerms
+#      assigns automatically belongs to NO group as far as MCHPRS is
+#      concerned. Grant membership with `lp user <name> parent add <group>`,
+#      which writes the `group.<name>` node MCHPRS looks for.
 #
 # ---------------------------------------------------------------------------
 # Syntax
@@ -4011,14 +4024,57 @@ tracks:
       - admin
 ```
 
-- [ ] **Step 2: Validate the YAML parses**
+- [ ] **Step 2: Validate the model against the seeder that will apply it**
+
+Checking that the YAML merely parses is far too weak now. `seed.py` rejects unknown
+keys, non-list `permissions`/`inherits`/`groups`, mixed-case or malformed names and
+references, non-scalar context values, and any `mchprs.*` node that is a strict
+prefix of another across a group's inheritance closure. Every one of those is a
+mistake you can make while writing this file, so validate with the real thing:
 
 ```bash
-docker run --rm -v "$PWD/src/luckperms-init:/w" -w /w python:3.12-alpine sh -c \
-  'pip install --no-cache-dir PyYAML==6.0.2 >/dev/null && python3 -c "import yaml,sys; yaml.safe_load(open(\"permissions.yml\")); print(\"ok\")"'
+docker build -t luckperms-init-check ./src/luckperms-init
+docker run --rm -i -e LUCKPERMS_SECRET=validate-only -e PERMISSIONS_FILE=/dev/stdin \
+  --entrypoint python3 luckperms-init-check -c "
+import sys
+sys.path.insert(0, '/')
+import seed
+groups, tracks = seed.load_model()
+desired = {n: seed.build_nodes(n, s or {}) for n, s in groups.items()}
+inherits = {n: list((s or {}).get('inherits') or []) for n, s in groups.items()}
+seed.check_mchprs_closure(desired, inherits)
+for name, nodes in desired.items():
+    print(f'{name}: ' + ', '.join(n['key'] for n in nodes))
+for name, spec in tracks.items():
+    print(f'track {name}: ' + ' -> '.join(spec.get('groups') or []))
+print('MODEL OK')
+" < src/luckperms-init/permissions.yml
+docker image rm luckperms-init-check
 ```
 
-Expected: `ok`.
+The model is fed on **stdin** rather than bind-mounted on purpose: this worktree's
+path contains spaces, and `-v "$PWD/..."` is awkward to get right on Windows.
+`MSYS_NO_PATHCONV=1` may be needed in front of `docker run` on Git Bash, which
+otherwise rewrites the leading `/` in `/dev/stdin` into a Windows path.
+
+Expected, exactly (this was run against the model above before the task was
+dispatched, so a difference means the file was mistyped rather than that the
+expectation is stale):
+
+```
+default: weight.0, group.onboarder
+onboarder: weight.10, prefix.10.&7[New] , irc.server.onboarding, irc.server.survival, irc.server.project
+member: weight.100, prefix.100.&a[Member] , group.onboarder, irc.server.survival, irc.server.project, mchprs.command.*
+admin: weight.1000, prefix.1000.&c[Admin] , group.member, luckperms.*, minecraft.command.*, mchprs.admin.*
+track onboarding: onboarder -> member -> admin
+MODEL OK
+```
+
+Note what that output confirms beyond "it parses": every node key is the form
+LuckPerms derives a node TYPE from, so `weight.0` becomes a weight and
+`group.onboarder` becomes an inheritance edge rather than a literal permission
+called "group.onboarder". If a key you expected to be structural shows up here
+looking like an ordinary permission string, the spec key above it is misspelled.
 
 - [ ] **Step 3: Commit**
 
