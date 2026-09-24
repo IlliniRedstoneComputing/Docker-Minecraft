@@ -2688,7 +2688,7 @@ done
 # folder, a renamed service, or a plugin that never loaded would silently turn
 # all six of these into permanent passes. lib.sh documents a guard for exactly
 # this class on assert_not_contains, and the `|| echo NONE` form routes around
-# it. The raw listing separates the cases: 2 entries versus 0.
+# it. The raw listing separates the cases: a non-empty listing versus none.
 #
 # tr provides the case-insensitivity grep -i was doing, the same way
 # test-compose-config.sh lowercases before its own checks.
@@ -2752,6 +2752,18 @@ assert_not_contains "$VLS" ".mv.db" "velocity created no H2 database"
 # This also splits two failures that the count conflates: no new `Sending` line
 # means the write never pushed, while `Sending` without `Received` means the
 # messenger itself is broken.
+#
+# What this proves is bounded, and worth stating exactly: SENT_BEFORE is read a
+# few seconds before the PUT, so a foreign ping landing in that window would be
+# adopted as PING_ID. The delivery half stays exact either way, CODE_PUT and the
+# row count independently prove our write happened, and the window is the
+# POST+PUT interval rather than the whole run -- but it is not zero.
+#
+# The baseline read below is deliberately NOT bounded by --since, unlike the
+# poll loops. It runs once rather than up to 45 times, so the cost that --since
+# exists to avoid does not apply, and a window that excluded an older last ping
+# would hand back an empty baseline that any new ping then appears to differ
+# from. Do not "harmonize" it with the loops.
 SENT_BEFORE=$(docker compose logs luckperms-standalone 2>/dev/null \
   | grep -o 'Sending ping with id: [0-9a-f-]*' | tail -1)
 
