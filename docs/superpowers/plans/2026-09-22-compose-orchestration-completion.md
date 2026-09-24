@@ -4533,38 +4533,126 @@ Create `tests/run-all.sh`:
 # Run every test suite. Requires the stack to be running.
 cd "$(dirname "$0")/.." || exit 1
 
-FAILED=0
+FAILED=""
+RAN=0
 for suite in tests/test-*.sh; do
+  # An unmatched glob stays literal in bash, so with no suites present this
+  # loop would run once with suite='tests/test-*.sh' and report a confusing
+  # "No such file or directory" instead of the obvious thing. Say it plainly.
+  [ -r "$suite" ] || { echo "no test suites found in tests/"; exit 1; }
   echo
   echo "=============================================================="
   echo "$suite"
   echo "=============================================================="
-  bash "$suite" || FAILED=1
+  RAN=$((RAN + 1))
+  bash "$suite" || FAILED="$FAILED $suite"
 done
 
 echo
-if [ "$FAILED" -eq 0 ]; then
-  echo "ALL SUITES PASSED"
-else
-  echo "SOME SUITES FAILED"
+if [ -z "$FAILED" ]; then
+  echo "ALL $RAN SUITES PASSED"
+  exit 0
 fi
-exit "$FAILED"
+# Name them. Each suite already prints its own failures, but four suites emit
+# several hundred lines between them, and "SOME SUITES FAILED" on its own
+# makes you scroll back through all of it to learn which one to look at.
+echo "FAILED SUITES:$FAILED"
+exit 1
 ```
 
 - [ ] **Step 2: Recreate the stack from scratch**
 
 This proves a clean deployment works, not just an incrementally-patched one.
 
+`down -v` destroys both named volumes. Confirm before running that nothing in
+`managed-files` is worth keeping: the check is whether any server has player
+state, since AGENTS.md item 4 marks the `survival`, `project-0`, `project-1`
+and `mchprs` worlds player-owned, and no backup exists unless `backup.config`
+has been created.
+
 ```bash
-docker compose -f compose.yml down -v
-docker compose -f compose.yml up -d --build volume_init luckperms-db luckperms-standalone luckperms-init webdav caddy velocity survival mchprs
-sleep 120
-docker compose -f compose.yml up -d --build lobby onboarding project-0 project-1
-sleep 150
-docker compose -f compose.yml ps
+docker run --rm -v irc-minecraft_managed-files:/m alpine:latest sh -c \
+  'for s in survival project-0 project-1 mchprs onboarding; do
+     printf "%s playerdata=%s\n" "$s" "$(ls /m/$s/world/playerdata 2>/dev/null | wc -l)"
+   done'
 ```
 
-Expected: all services `running`; `luckperms-db`, `luckperms-standalone`, and `velocity` also `healthy`; `volume_init` and `luckperms-init` `exited (0)`.
+Expected before proceeding: `playerdata=0` everywhere. A non-zero count means a
+player has joined and the volume holds the only copy of their state — stop and
+take a backup rather than running `down -v`.
+
+```bash
+docker compose -f compose.yml down -v
+docker compose -f compose.yml up -d --build \
+  volume_init backup luckperms-db luckperms-standalone luckperms-init \
+  webdav caddy velocity survival mchprs
+```
+
+`backup` belongs in that list. It is the only service whose sole dependency is
+`volume_init: service_completed_successfully`, so leaving it out is the one way
+to recreate the stack "from scratch" without ever exercising that edge.
+
+Now wait for health rather than sleeping a fixed number of seconds. Against an
+empty volume each Fabric server re-downloads its loader and libraries — 180 MB
+or more per server, measured on the seeded volume — so a cold first boot is
+much slower than the warm restart the original fixed sleeps were sized for, and
+a short sleep hands Step 3 a half-started stack whose failures look like test
+bugs.
+
+```bash
+# wait_healthy "<services>" [timeout-seconds]
+# Only pass services that HAVE a healthcheck. For one that does not, the
+# .State.Health template errors, the status reads empty, and this would spin
+# until the deadline. Healthchecked here: luckperms-db and luckperms-standalone
+# declare their own, and the six Minecraft servers inherit `mc-health` from
+# their base images (AGENTS.md item 2). mchprs, webdav, caddy and backup
+# declare none.
+wait_healthy() {
+  deadline=$(( $(date +%s) + ${2:-900} ))
+  while :; do
+    pending=""
+    for svc in $1; do
+      cid=$(docker compose ps -q "$svc")
+      st=$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null)
+      [ "$st" = healthy ] || pending="$pending $svc"
+    done
+    [ -z "$pending" ] && { echo "healthy:$1"; return 0; }
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "TIMED OUT waiting for:$pending"; return 1
+    fi
+    sleep 10
+  done
+}
+
+wait_healthy "luckperms-db luckperms-standalone velocity survival"
+docker compose -f compose.yml up -d --build lobby onboarding project-0 project-1
+wait_healthy "lobby onboarding project-0 project-1"
+```
+
+`luckperms-init` needs its own wait. It is a `restart: "no"` one-shot, and
+`up -d` returns once it has *started*, not once it has finished seeding — so
+without this the LuckPerms suites can race the seeder.
+
+```bash
+docker wait "$(docker compose ps -aq luckperms-init)"
+```
+
+Expected: `0`.
+
+```bash
+docker compose -f compose.yml ps -a
+```
+
+**`-a`, not a bare `ps`.** `docker compose ps` lists only running containers, so
+it omits `volume_init` and `luckperms-init` entirely — the two services this
+step most needs to see, and the two whose absence reads as "still starting"
+rather than "already finished".
+
+Expected: twelve services `running`; of those, `luckperms-db`,
+`luckperms-standalone`, `velocity`, `lobby`, `survival`, `onboarding`,
+`project-0` and `project-1` also `healthy`, while `mchprs`, `webdav`, `caddy`
+and `backup` declare no healthcheck and show only `running`; `volume_init` and
+`luckperms-init` `exited (0)`.
 
 **`cloudflared` is deliberately excluded from both `up` commands.** With the placeholder
 token in `.env` it cannot authenticate and would restart-loop, which is noise rather
@@ -4576,7 +4664,9 @@ than a failure. It is verified against a real tunnel at deploy time, not here.
 bash tests/run-all.sh
 ```
 
-Expected: `ALL SUITES PASSED`.
+Expected: `ALL 4 SUITES PASSED` -- the runner reports the count it ran, so a
+suite that silently stopped matching the glob shows up as a smaller number
+rather than as an unqualified success.
 
 - [ ] **Step 4: Verify the uid trap is actually closed**
 
@@ -4585,14 +4675,24 @@ actually started and created directories as uid 1000. Writing into one of those 
 WebDAV is the original failure mode that motivated replacing the nginx image.
 
 ```bash
-WU=$(grep -E '^WEBDAV_USERNAME=' .env | cut -d= -f2-)
-WP=$(grep -E '^WEBDAV_PASSWORD=' .env | cut -d= -f2-)
+# tr -d '\r': .env is a mixed-ending file, and these two keys sit on CRLF
+# lines. Git Bash's grep strips the CR by accident so the guard looks
+# unnecessary on this host; the same command on Linux keeps it, and a trailing
+# CR in a password produces a 401 that reads like a wrong password. Same
+# reasoning as the identical guard at the top of tests/test-luckperms.sh.
+WU=$(grep -E '^WEBDAV_USERNAME=' .env | cut -d= -f2- | tr -d '\r')
+WP=$(grep -E '^WEBDAV_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
 
 # The survival server creates /data/config as uid 1000 on first boot.
 docker compose exec -T survival sh -c 'ls -ldn /data/config'
 
-docker run --rm --network irc-frontend-network curlimages/curl:latest \
-  -s -o /dev/null -w 'PUT=%{http_code}\n' -u "$WU:$WP" \
+# Password on stdin, not on the argv. `docker inspect` and host `ps` expose a
+# container's command line for its whole lifetime, which is why both the WebDAV
+# and LuckPerms suites already use this `-K -` form. A manual step is no less
+# visible than a scripted one.
+printf 'user = "%s:%s"\n' "$WU" "$WP" | docker run --rm -i \
+  --network irc-frontend-network curlimages/curl:latest -s -K - \
+  -o /dev/null -w 'PUT=%{http_code}\n' \
   -X PUT --data 'x' http://caddy:80/files/survival/config/uidtest.txt
 ```
 
@@ -4627,7 +4727,14 @@ docker compose exec -T luckperms-db mariadb -u"$DB_USER" -p"$DB_PASS" -N -B \
   -e "SELECT name, permission, server FROM luckperms_group_permissions ORDER BY name;" "$DB_NAME"
 ```
 
-Expected: rows for `onboarder`, `member`, and `admin`, with `mchprs.command.*` carrying server `mchprs`, and no permission that is a strict prefix of another.
+Expected: rows for `onboarder`, `member`, and `admin`, with `mchprs.command.*`
+carrying server `mchprs`, and no permission that is a strict prefix of another.
+
+The prefix half of that is belt-and-braces, not the only guard:
+`check_mchprs_prefixes` in `src/luckperms-init/seed.py` refuses to apply a model
+containing such a node, and `tests/test-seeder.sh` proves it refuses. What this
+query adds is the other half — that the rows the seeder accepted actually
+reached the table MCHPRS reads directly.
 
 - [ ] **Step 6: Verify the only published port**
 
@@ -4639,9 +4746,17 @@ Expected: exactly one line, for `velocity`, showing `25565`.
 
 - [ ] **Step 7: Restore the production heap setting**
 
-Same two traps as Task 12 Step 2: `.env` is CRLF, so `sed -i` strips the CR from every
-line of it, and the key may be absent from `.env` entirely, in which case a substitution
-matches nothing and silently leaves the test heap in place.
+Same two traps as Task 12 Step 2: `sed -i` would strip the CR from every line of
+`.env`, and the key may be absent from `.env` entirely, in which case a
+substitution matches nothing and silently leaves the test heap in place.
+
+One correction to how Task 12 put it: `.env` is **mixed**-ending, not CRLF.
+Measured 28 CR against 30 LF — every line is CRLF except the two that earlier
+steps appended with `printf ... '\n'`, `CLOUDFLARE_TUNNEL_TOKEN` and
+`JAVA_OPTS` itself. The command below is correct either way, because
+`[^\r\n]*` stops before whichever terminator is present and leaves it
+untouched; the point of the correction is that `.env` will not survive being
+treated as uniformly CRLF by some later step.
 
 ```bash
 if grep -q '^JAVA_OPTS=' .env; then
@@ -4654,10 +4769,15 @@ docker compose config | grep -m1 JAVA_OPTS
 
 Expected: `JAVA_OPTS: -Xmx2G -Xms1G`.
 
-Note what this restores: 2 GiB x 7 JVMs is 14 GiB of heap, which does **not** fit the
-15.3 GiB `docker info` reports on this host. It is the production value, put back after
-testing — not a setting the full local stack can be brought up with. Anyone running the
-stack locally after this step should expect to lower it again.
+Note what this restores: seven services carry JAVA_OPTS, but only six are JVMs
+-- velocity, lobby, survival, onboarding, project-0 and project-1. (mchprs is
+Rust and carries the variable without reading it.) So this asks 12 GiB of heap
+from the 15.3 GiB `docker info` reports on this host, before the JVMs take
+their non-heap overhead and before MariaDB and the rest. It does **not** fit.
+
+It is the production value, put back after testing -- not a setting the full
+local stack can be brought up with. Anyone running the stack locally after this
+step should expect to lower it again.
 
 - [ ] **Step 8: Commit**
 
