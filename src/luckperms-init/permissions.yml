@@ -2,12 +2,22 @@
 # LuckPerms permission model -- applied on every `docker compose up`.
 # ============================================================================
 #
-# THIS FILE IS AUTHORITATIVE for the groups it names. Each managed group's
-# node set is REPLACED wholesale on every deployment, so changes made to
-# these groups through the LuckPerms web editor WILL BE OVERWRITTEN.
+# THIS FILE IS AUTHORITATIVE for the groups and tracks it names. Each managed
+# group's node set is REPLACED wholesale on every deployment, and each managed
+# track's ladder is replaced in full and in order, so changes made to them
+# through the LuckPerms web editor WILL BE OVERWRITTEN.
+#
+# Because replacement is wholesale, deleting a permission here DELETES that
+# node on the next deployment. Commenting out a block to "temporarily disable"
+# it is a destructive edit, not an inert one.
 #
 # Groups NOT listed here are never touched. Create an unlisted group if you
-# need somewhere to make ad-hoc runtime grants.
+# need somewhere to make ad-hoc runtime grants -- but give it a weight above
+# any managed group that denies the same key. LuckPerms walks a user's parent
+# groups highest-weight-first and keeps the FIRST value it finds, so a weight-0
+# ad-hoc grant of `irc.server.survival` loses to onboarder's explicit deny at
+# weight 10, silently. Measured against this API: weight 0 resolves false,
+# weight 11 resolves true.
 #
 # ---------------------------------------------------------------------------
 # MCHPRS constraints -- read before adding permissions
@@ -22,21 +32,38 @@
 #      Use exact keys or an explicit `*` wildcard -- never a partial path.
 #   2. Only `global` and `mchprs` server contexts are visible to it.
 #   3. Group membership must be an explicit `group.<name>` node on the user.
-#      MCHPRS never consults the primary-group table. In practice that means
-#      a player whose only membership is the `default` group LuckPerms
-#      assigns automatically belongs to NO group as far as MCHPRS is
-#      concerned. Grant membership with `lp user <name> parent add <group>`,
-#      which writes the `group.<name>` node MCHPRS looks for.
+#      MCHPRS never consults the primary-group table. That matters because
+#      LuckPerms does not persist a user whose only membership is the
+#      `default` group it assigns automatically: such a player gets a row in
+#      `luckperms_players` and NO rows at all in `luckperms_user_permissions`,
+#      so MCHPRS sees them in no group. Measured -- and note that the REST API
+#      reports `group.default` on that same player, so the API view is not
+#      evidence the node is stored. A `group.default` row does appear once the
+#      player has some other stored node, and disappears again when it goes.
+#      Grant membership with `lp user <name> parent add <group>`, which writes
+#      the `group.<name>` node MCHPRS looks for.
 #
 # ---------------------------------------------------------------------------
 # Syntax
 # ---------------------------------------------------------------------------
-#   weight:       integer, higher wins for prefix and meta resolution
-#   prefix:       chat prefix; priority defaults to the group's weight
-#   inherits:     list of parent group names
-#   permissions:  either a bare string (granted globally), or a mapping with
-#                 key, optional value (false negates), optional context,
-#                 and optional expiry (epoch seconds)
+# Under `groups:`, each group takes:
+#   weight:          integer; higher wins for prefix and meta resolution, and
+#                    orders a user's parent groups as described above
+#   prefix:          chat prefix
+#   prefix_priority: overrides the prefix priority; defaults to the weight
+#   inherits:        list of parent group names
+#   permissions:     either a bare string (granted globally), or a mapping with
+#                    key, optional value (false negates), optional context,
+#                    and optional expiry (epoch seconds)
+#
+# Under `tracks:`, each track takes:
+#   groups:          the promotion ladder, in order, lowest rung first
+#
+# Do NOT put an `expiry` on a group node here. LuckPerms accepts a lapsed
+# expiry over the API and echoes it straight back, but never writes it to
+# storage -- so the seeder agrees with the server on the run that sets it and
+# disagrees on every run after, rewriting the group forever. Expiries belong
+# on users, granted at runtime.
 # ============================================================================
 
 groups:
@@ -46,8 +73,12 @@ groups:
     inherits:
       - onboarder
 
-  # A new player who has not yet been vouched for. Confined to the
-  # onboarding server.
+  # A new player who has not yet been vouched for. INTENDED to be confined to
+  # the onboarding server -- but nothing reads `irc.server.*` yet. Velocity's
+  # own /server command checks `velocity.command.server` alone and treats
+  # undefined as permitted; confining a player to one backend needs a plugin
+  # listening on ServerPreConnectEvent, and none is installed. These nodes are
+  # the right shape for that gate and are inert until it exists.
   onboarder:
     weight: 10
     prefix: "&7[New] "
@@ -61,7 +92,9 @@ groups:
       - key: "irc.server.project"
         value: false
 
-  # A vouched member with normal play access.
+  # A vouched member with normal play access. The two grants below re-grant
+  # what onboarder denies: a group's own node beats one inherited from a
+  # parent, so this resolves true for a member. Verified against this API.
   member:
     weight: 100
     prefix: "&a[Member] "
@@ -78,7 +111,8 @@ groups:
         context:
           server: mchprs
 
-  # Staff. Full administrative control.
+  # Staff. Administrative control over LuckPerms, the vanilla commands and
+  # MCHPRS -- deliberately not a blanket `*`.
   admin:
     weight: 1000
     prefix: "&c[Admin] "
@@ -94,6 +128,11 @@ groups:
 
 tracks:
   # Promotion path: lp user <name> promote onboarding
+  #
+  # Two things to know before using it. A new player already carries
+  # onboarder's nodes through `default`, so the first promote changes nothing
+  # they can observe and reaching `member` takes two. And the ladder ends at
+  # `admin`, so one promote too many makes a player staff.
   onboarding:
     groups:
       - onboarder
