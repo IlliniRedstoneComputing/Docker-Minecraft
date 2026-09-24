@@ -66,6 +66,14 @@ GROUP="ctxprobe$$"
 # Part A's scratch artifacts are named here for exactly the reason given above:
 # seeder_cleanup runs once before the suite starts, when none of them exist.
 # PROBE_MODEL starts empty because mktemp has not run yet at that point.
+#
+# This widens what a SIGKILL leaks, which the comment above predates. A killed
+# run now strands four API objects rather than one -- ctxprobe, seedprobe-base,
+# seedprobe-child and seedprobe-track -- plus a mktemp file and, the expensive
+# one, a tagged local image luckperms-init-test-<pid> carrying a whole
+# python:3.12-alpine and PyYAML layer stack. The reasoning above still applies:
+# a blind sweep of the seedprobe* names would delete a concurrently running
+# copy's scratch state, so the pre-run pass reclaims only this PID's.
 P_BASE="seedprobe-base$$"
 P_CHILD="seedprobe-child$$"
 P_TRACK="seedprobe-track$$"
@@ -194,9 +202,15 @@ printf '%s\n' \
   "      - $P_CHILD" \
   >"$PROBE_MODEL"
 
-# The model arrives on stdin rather than as a bind mount: this repository is
-# checked out under a path containing spaces, and MSYS_NO_PATHCONV keeps Git
-# Bash from rewriting the leading slash of /dev/stdin into a Windows path.
+# The model arrives on stdin rather than as a bind mount because it lives in a
+# mktemp file that nothing outside this process knows about: there is no stable
+# path to mount, and a temp path is exactly what a -v would mangle.
+#
+# MSYS_NO_PATHCONV is defensive here rather than load-bearing. Measured on this
+# host: without it, Git Bash rewrites -e PERMISSIONS_FILE=/dev/stdin into
+# /proc/self/fd/0, which is a valid path to the very same descriptor, so the
+# seeder works either way. Keep it anyway -- the rewrite is real, and the two
+# spellings staying interchangeable is not something to depend on.
 seed_probe() {
   MSYS_NO_PATHCONV=1 docker run --rm -i --network irc-frontend-network \
     -e LUCKPERMS_SECRET="$SECRET" \
@@ -220,8 +234,14 @@ assert_contains "$NODES_EMPTY" "group.$P_BASE" \
 RUN_SEEDED=$(seed_probe)
 assert_contains "$RUN_SEEDED" "changed=0" "state 3 (fully seeded): reports no changes"
 assert_not_contains "$RUN_SEEDED" "created group" "state 3 (fully seeded): creates nothing"
+# Both halves. seed.py prints "pushed update to connected servers" on success
+# and "warning: messaging update returned HTTP ..." on failure, so checking
+# only the success string would let an attempted-and-failed push pass as "no
+# push happened".
 assert_not_contains "$RUN_SEEDED" "pushed update" \
-  "state 3 (fully seeded): pushes no messaging update"
+  "state 3 (fully seeded): logs no successful messaging push"
+assert_not_contains "$RUN_SEEDED" "messaging update returned" \
+  "state 3 (fully seeded): does not even attempt a messaging push"
 
 # --- State 2: half-seeded. Groups present, nodes gone. ---
 for g in "$P_BASE" "$P_CHILD"; do
@@ -259,8 +279,28 @@ assert_eq "$NODES_HALF" "$NODES_EMPTY" \
 #
 # This section asserts the END STATE rather than a change count, so it passes
 # whether or not the stack was already seeded, and the suite stays re-runnable.
+# Bind the log to the container THIS command creates. `docker compose logs`
+# reads whichever container currently carries the service, and for a
+# restart: "no" one-shot that container sits in `exited 0` with its full log
+# intact. So if the `up` failed or quietly no-opped, these assertions would
+# read the PREVIOUS run's log and pass -- and on an already-seeded stack that
+# log says changed=0, which is exactly what the last assertion in this section
+# looks for. A silent pass, in the one section that proves the compose wiring.
+#
+# Measured: --force-recreate always yields a new container id, so comparing
+# ids either side of the call is a reliable "did it really run". Reading
+# `docker logs <id>` also closes the related hazard of logs accumulating
+# across runs if anyone later drops --force-recreate.
+DEPLOY_WAS=$(docker compose ps -aq luckperms-init)
 docker compose up --build --no-deps --force-recreate luckperms-init >/dev/null 2>&1
-DEPLOY=$(docker compose logs --no-log-prefix luckperms-init 2>/dev/null)
+DEPLOY_ID=$(docker compose ps -aq luckperms-init)
+if [ -n "$DEPLOY_ID" ] && [ "$DEPLOY_ID" != "$DEPLOY_WAS" ]; then
+  pass "the compose service was recreated and ran"
+else
+  fail "the compose service was recreated and ran" \
+    "container id was '$DEPLOY_WAS', now '$DEPLOY_ID'"
+fi
+DEPLOY=$(docker logs "$DEPLOY_ID" 2>&1)
 assert_contains "$DEPLOY" "changed=" "the compose service ran to completion"
 assert_not_contains "$DEPLOY" "INCOMPLETE" "the compose service did not fail partway"
 
@@ -280,11 +320,19 @@ TRACK=$(api "$BASE/luckperms/track/onboarding")
 assert_contains "$TRACK" '"groups":["onboarder","member","admin"]' \
   "the onboarding track is in model order"
 
+# Needle the key, type and value TOGETHER rather than the key alone. A node
+# stored with "value":false -- a negated inheritance, a negated wildcard --
+# satisfies a bare key match while meaning the opposite of the description.
+# This file already holds itself to that standard further up, where the
+# context probe pins "key":"server","value":"project-0" as a pair for exactly
+# this reason.
 MEMBER_NODES=$(api "$BASE/luckperms/group/member/nodes")
-assert_contains "$MEMBER_NODES" "group.onboarder" \
-  "member inherits onboarder as a group.<name> node"
-assert_contains "$MEMBER_NODES" "weight.100" "member carries its weight node"
-assert_contains "$MEMBER_NODES" "mchprs.command.*" "member carries the mchprs wildcard"
+assert_contains "$MEMBER_NODES" '"key":"group.onboarder","type":"inheritance","value":true' \
+  "member inherits onboarder as a positive group.<name> node"
+assert_contains "$MEMBER_NODES" '"key":"weight.100","type":"weight","value":true' \
+  "member carries its weight node"
+assert_contains "$MEMBER_NODES" '"key":"mchprs.command.*","type":"permission","value":true' \
+  "member carries the mchprs wildcard as a positive permission"
 
 # MCHPRS reads the database directly rather than through the API, and Part A
 # established that the two can disagree, so confirm the node reached storage
@@ -298,8 +346,16 @@ assert_contains "$MEMBER_ROWS" "group.onboarder" \
   "member's inheritance node is in storage, where MCHPRS reads it"
 
 # And the deployment path itself must settle.
+SECOND_WAS=$(docker compose ps -aq luckperms-init)
 docker compose up --no-deps --force-recreate luckperms-init >/dev/null 2>&1
-SECOND=$(docker compose logs --no-log-prefix luckperms-init 2>/dev/null)
+SECOND_ID=$(docker compose ps -aq luckperms-init)
+if [ -n "$SECOND_ID" ] && [ "$SECOND_ID" != "$SECOND_WAS" ]; then
+  pass "the second compose run recreated the container"
+else
+  fail "the second compose run recreated the container" \
+    "container id was '$SECOND_WAS', now '$SECOND_ID'"
+fi
+SECOND=$(docker logs "$SECOND_ID" 2>&1)
 assert_contains "$SECOND" "changed=0" "a second compose run is a no-op"
 
 # Cleanup also runs from the EXIT trap; this is belt and braces.

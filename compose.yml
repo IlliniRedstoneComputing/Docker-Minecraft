@@ -109,6 +109,12 @@ services:
 
   # One-shot: applies src/luckperms-init/permissions.yml through the REST API.
   # Runs on every `up`; idempotent, and reports changed=0 when already correct.
+  #
+  # Nothing depends_on this service, deliberately. Gating the game servers on
+  # service_completed_successfully would turn a seeding failure into a total
+  # outage. The trade is that `docker compose up -d` reports success even when
+  # the seeder exits 1, so check its exit code separately rather than reading
+  # a green compose run as proof the model applied.
   luckperms-init:
     build:
       context: ./src/luckperms-init
