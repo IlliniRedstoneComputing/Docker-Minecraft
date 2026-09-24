@@ -2601,21 +2601,30 @@ api() {
 lp() { api "$BASE/luckperms$1"; }
 
 # The suite writes a real group into the shared database. Delete it both before
-# and after, so an interrupted run cannot poison the next one: $$ is unique per
-# run but PIDs recycle, and against a leftover group the POST becomes an update
-# rather than a create.
+# and after, so an interrupted run cannot poison the next one. The trap covers
+# the ordinary interrupted run; the explicit call below covers what a trap
+# cannot -- a previous run killed by SIGKILL, where no handler fired at all.
+# $$ is unique among live processes but PIDs recycle, and against a leftover
+# group of the same name the POST becomes an update rather than a create.
+#
+# GROUP is named here, above the trap, so the handler is never installed with
+# nothing to delete. A 404 from the pre-run delete is expected and ignored.
 #
 # tests/lib.sh installs its own EXIT trap to remove its temp result logs, so
 # chain onto it rather than replacing it -- a plain `trap lp_cleanup EXIT`
-# silently discards lib.sh's cleanup. See the same pattern in test-webdav.sh.
+# silently discards lib.sh's cleanup, leaking two temp files per run. Verified
+# by capture-and-chain in a subshell: both _ASSERT_* logs are removed. Same
+# pattern, and the same reasoning, as tests/test-webdav.sh.
+GROUP="msgtest$$"
+
 lp_cleanup() {
-  [ -n "${GROUP:-}" ] || return 0
   api -o /dev/null -X DELETE "$BASE/luckperms/group/$GROUP" >/dev/null 2>&1 || true
 }
 _prior_exit_trap=$(trap -p EXIT)
 _prior_exit_trap=${_prior_exit_trap#trap -- \'}
 _prior_exit_trap=${_prior_exit_trap%\' EXIT}
 trap "lp_cleanup; ${_prior_exit_trap}" EXIT
+lp_cleanup
 
 echo "luckperms"
 
@@ -2694,7 +2703,6 @@ assert_eq "$VH2" "NONE" "velocity created no H2 database"
 #
 # Count BEFORE and require the count to rise. A bare grep would pass on a ping
 # from earlier in the container's life and never fail.
-GROUP="msgtest$$"
 PINGS_BEFORE=$(docker compose logs survival 2>/dev/null | grep -c 'Received update ping')
 
 api -o /dev/null -H 'Content-Type: application/json' \
@@ -2747,8 +2755,9 @@ docker compose config | grep -m1 JAVA_OPTS
 Expected: `JAVA_OPTS: -Xmx1G -Xms512M`. Verify this before bringing anything up — it is
 the whole point of the step, and it is the one part that fails quietly.
 
-**Use `perl -i -pe`, never `sed -i`, on `.env`.** It is a CRLF file (measured: CR=28,
-LF=29 — every line but the last), and on Git Bash `sed -i` strips the CR from *every*
+**Use `perl -i -pe`, never `sed -i`, on `.env`.** It is a CRLF file (measured before
+this step: CR=28, LF=29 — every line but the last; the `printf` above appends an
+LF-only line, making it CR=28, LF=30), and on Git Bash `sed -i` strips the CR from *every*
 line of the file, not just the one it rewrites. See the platform section of `AGENTS.md`.
 `[^\r\n]*` rather than `.*` for the same reason: `.` matches a CR, so `.*` swallows it and
 leaves that one line LF-only inside an otherwise CRLF file.
