@@ -4592,12 +4592,22 @@ docker compose -f compose.yml up -d --build \
 `volume_init: service_completed_successfully`, so leaving it out is the one way
 to recreate the stack "from scratch" without ever exercising that edge.
 
-Now wait for health rather than sleeping a fixed number of seconds. Against an
-empty volume each Fabric server re-downloads its loader and libraries — 180 MB
-or more per server, measured on the seeded volume — so a cold first boot is
-much slower than the warm restart the original fixed sleeps were sized for, and
-a short sleep hands Step 3 a half-started stack whose failures look like test
-bugs.
+Now wait for health rather than sleeping a fixed number of seconds.
+
+This replaced a `sleep 120` and a `sleep 150`. The reason first given for the
+change was wrong and is corrected here: it predicted that each Fabric server
+would re-download 180 MB of loader and libraries into the empty volume, making
+a cold boot far slower than the fixed sleeps allowed. It does not. Those
+artifacts live in the image, not the volume. Measured on a real `down -v`
+rebuild: first wave healthy in **19s**, second wave in **89s**, against sleeps
+of 120s and 150s. The fixed sleeps would have worked, and wasted about 160s.
+
+Keep the wait loop anyway, for the reason that survives measurement: a sleep
+is a guess in both directions. It cannot be too short here today, but it can
+be on a slower host, on a cold image cache, or after any change that adds
+startup work — and when it is, Step 3 runs against a half-started stack and
+the failures read as test bugs rather than as a race. `wait_healthy` cannot
+under-wait, and it finishes as soon as the stack is actually ready.
 
 ```bash
 # wait_healthy "<services>" [timeout-seconds]
