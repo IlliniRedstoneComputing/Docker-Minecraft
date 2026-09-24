@@ -56,14 +56,16 @@
 #                    key, optional value (false negates), optional context,
 #                    and optional expiry (epoch seconds)
 #
+# Do NOT put an `expiry` on a group node here. A lapsed expiry IS written to
+# storage by the write, and is then deleted the first time the group is read
+# back -- LuckPerms audits expired nodes on load. So the seeder finds it gone
+# on the next run, writes it again, and reports a change on every deployment
+# forever. A future expiry is stored and survives, but that only postpones
+# the loop until it lapses. Expiries belong on users, granted at runtime.
+# (Measured against this API.)
+#
 # Under `tracks:`, each track takes:
 #   groups:          the promotion ladder, in order, lowest rung first
-#
-# Do NOT put an `expiry` on a group node here. LuckPerms accepts a lapsed
-# expiry over the API and echoes it straight back, but never writes it to
-# storage -- so the seeder agrees with the server on the run that sets it and
-# disagrees on every run after, rewriting the group forever. Expiries belong
-# on users, granted at runtime.
 # ============================================================================
 
 groups:
@@ -130,9 +132,11 @@ tracks:
   # Promotion path: lp user <name> promote onboarding
   #
   # Two things to know before using it. A new player already carries
-  # onboarder's nodes through `default`, so the first promote changes nothing
-  # they can observe and reaching `member` takes two. And the ladder ends at
-  # `admin`, so one promote too many makes a player staff.
+  # onboarder's nodes through `default`, so the first promote grants nothing
+  # new and reaching `member` takes two -- though it does give them their
+  # first stored nodes, which is what makes them visible to MCHPRS at all
+  # (constraint 3). And the ladder ends at `admin`, so one promote too many
+  # makes a player staff.
   onboarding:
     groups:
       - onboarder

@@ -3988,14 +3988,16 @@ Create `src/luckperms-init/permissions.yml`:
 #                    key, optional value (false negates), optional context,
 #                    and optional expiry (epoch seconds)
 #
+# Do NOT put an `expiry` on a group node here. A lapsed expiry IS written to
+# storage by the write, and is then deleted the first time the group is read
+# back -- LuckPerms audits expired nodes on load. So the seeder finds it gone
+# on the next run, writes it again, and reports a change on every deployment
+# forever. A future expiry is stored and survives, but that only postpones
+# the loop until it lapses. Expiries belong on users, granted at runtime.
+# (Measured against this API.)
+#
 # Under `tracks:`, each track takes:
 #   groups:          the promotion ladder, in order, lowest rung first
-#
-# Do NOT put an `expiry` on a group node here. LuckPerms accepts a lapsed
-# expiry over the API and echoes it straight back, but never writes it to
-# storage -- so the seeder agrees with the server on the run that sets it and
-# disagrees on every run after, rewriting the group forever. Expiries belong
-# on users, granted at runtime.
 # ============================================================================
 
 groups:
@@ -4062,9 +4064,11 @@ tracks:
   # Promotion path: lp user <name> promote onboarding
   #
   # Two things to know before using it. A new player already carries
-  # onboarder's nodes through `default`, so the first promote changes nothing
-  # they can observe and reaching `member` takes two. And the ladder ends at
-  # `admin`, so one promote too many makes a player staff.
+  # onboarder's nodes through `default`, so the first promote grants nothing
+  # new and reaching `member` takes two -- though it does give them their
+  # first stored nodes, which is what makes them visible to MCHPRS at all
+  # (constraint 3). And the ladder ends at `admin`, so one promote too many
+  # makes a player staff.
   onboarding:
     groups:
       - onboarder
@@ -4549,10 +4553,37 @@ recorded SHAs are not on `main`, so `git submodule update --remote` would roll a
 pointers backwards onto the pre-fix entrypoints, reinstating the `sed`-based secret
 injection, and would present as a working checkout rather than an error.
 
+- [ ] **Step 3c: Reconcile two claims the Task 15 review surfaced**
+
+Both came out of measuring the live API while reviewing the permission model,
+and both are documentation work rather than model work, which is why they were
+left for this task.
+
+First, `docs/api.md` says groups not named in `permissions.yml` are "never
+touched and are safe for runtime management". True as far as the seeder goes,
+but incomplete as advice: a user's parent groups resolve highest-weight-first
+and the first value found wins, so an ad-hoc group weighted below a managed
+group that denies the same key loses, silently and with no error anywhere.
+Measured: against `onboarder`'s deny at weight 10, an ad-hoc grant resolves
+false at weight 0 and true at weight 11. `permissions.yml` carries this
+caveat; `docs/api.md` is the file a remote admin service is written against
+and does not. Add it there.
+
+Second, consider moving one measurement out of `permissions.yml` and into
+`AGENTS.md`'s "Verified behaviors" list, which is where this repository keeps
+findings whose job is to stop someone re-litigating them. The finding: a player
+whose only membership is the auto-assigned `default` group has a row in
+`luckperms_players` and none in `luckperms_user_permissions`, so MCHPRS sees
+them in no group -- while `GET /user/{id}` reports `group.default` for that same
+player, so the API view is not evidence the node is stored. The row appears once
+the player has any other stored node and disappears when it goes. It reads as an
+obvious bug in constraint 3 and is not one. If you move it, leave a one-line
+pointer behind rather than deleting it outright.
+
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/api.md README.md
+git add docs/api.md README.md AGENTS.md src/luckperms-init/permissions.yml
 git commit -m "docs: reconcile documentation with the verified implementation"
 ```
 
