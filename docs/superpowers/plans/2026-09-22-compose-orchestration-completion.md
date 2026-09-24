@@ -4353,18 +4353,35 @@ This is that moment. None of them is a bug today. Item 5 came later, from Task 1
    authentication failure rather than as a line-ending bug. Add the same
    `| tr -d '\r'` to both extractions.
 
+6. **`ghcr.io/luckperms/rest-api:latest` is unpinned, and code now depends on its
+   contract.** Raised during Task 14's quality review. Until that task nothing here
+   cared what the REST API returned; now `src/luckperms-init/seed.py` depends on
+   measured behavior: that `PUT /group/X/nodes` replaces rather than appends, that a
+   node's type is derived from its key, that contexts come back lowercased, that a
+   duplicate group answers 409. `:latest` means any of that can change under the
+   stack with no change in this repository, on whatever day someone next runs
+   `docker compose build`. Declined during Task 14 on scope: pinning it changes what
+   the running stack rebuilds to, which is a Task 17 judgement rather than a Task 14
+   one, and the other image references deserve the same look at the same time. Note
+   the asymmetry that makes it awkward to leave open: `seed.py`'s own dependency is
+   pinned exactly, `PyYAML==6.0.2`, while the service it exists to talk to is not.
+
 ```bash
 grep -n 'CONFIG_DIR\|/usr/src/init_data' src/*/entrypoint.sh
 grep -H '^set ' src/*/entrypoint.sh
 grep -n 'content=$(cat' src/*/entrypoint.sh
 grep -c 'tr -d' tests/test-webdav.sh
+grep -n ':latest' compose.yml src/*/Dockerfile
 ```
 
-Expected, once all five items are closed: no single file both defines `CONFIG_DIR`
+Expected, once all six items are closed: no single file both defines `CONFIG_DIR`
 and spells out the literal `/usr/src/init_data` prefix, all seven `set` lines agree,
 and `test-webdav.sh` reports 2 rather than 0. Before they are closed, this block is a
-status report rather than a test — none of the five is a bug on this host today, and
-item 5 is the only one that becomes a real failure off it.
+status report rather than a test — none of the six is a bug on this host
+today. Item 5 is the only one that becomes a real failure off it, and item 6 the
+only one that can start failing here without anyone touching this repository.
+Item 6 is also the only one with no single right answer, so its grep is a prompt to
+decide rather than a target to reach.
 
 Decide each item explicitly. Leaving one open is a legitimate outcome, but record the
 decision here rather than letting it lapse — every one of these was already declined
