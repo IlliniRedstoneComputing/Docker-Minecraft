@@ -7,12 +7,33 @@ services:
     image: alpine
     volumes:
       - managed-files:/mnt/data
-    # This command creates the subdirectories and sets permissions
+    # Creates the per-server subdirectories, then hands the whole tree to uid
+    # 1000 and removes access for everyone else.
+    #
+    # This replaced a blanket `chmod -R 777`. Every service that touches this
+    # volume runs as uid 1000 -- the five Minecraft servers and velocity via
+    # their itzg base images, webdav via `user: 1000:1000`, and mchprs via the
+    # `user:` key on its own service. Because the uid is uniform, none of them
+    # needs group or other permissions to read or write what another wrote, so
+    # `o=` costs nothing and a stray container running as some other uid can no
+    # longer write here. backup and this container run as root and are
+    # unaffected, since root bypasses the mode bits.
+    #
+    # Do NOT drop the `user:` key from mchprs without putting the 777 back.
+    # mchprs is the one service whose image runs as root by default; if it
+    # writes /data as root again, WebDAV (uid 1000) can no longer edit any
+    # mchprs file, which is the whole point of exposing the volume over WebDAV.
+    #
+    # capital X in the mode sets execute on directories, and on files that
+    # already had it, rather than marking every file +x. Verified on this tree:
+    # the Fabric jars stay -rw-rw---- while 305 already-executable files keep
+    # it. Measured cost of the recursive pass: 2142 inodes, under a second.
     command: >
       sh -c "mkdir -p /mnt/data/velocity /mnt/data/lobby /mnt/data/survival
       /mnt/data/onboarding /mnt/data/mchprs /mnt/data/project-0
       /mnt/data/project-1 && 
-         chmod -R 777 /mnt/data"
+         chown -R 1000:1000 /mnt/data &&
+         chmod -R u=rwX,g=rwX,o= /mnt/data"
 
   # Daily backup service that creates compressed archives of all managed volumes and uploads them to S3-compatible storage
   backup:
@@ -356,6 +377,14 @@ services:
     build:
       context: ./src/mchprs
     container_name: mchprs-server
+    # Unlike every other server image here, stackdoubleflow/mchprs runs as
+    # root, so without this it writes /data as uid 0 and WebDAV -- which runs
+    # as 1000 -- cannot modify a single mchprs file unless the whole volume is
+    # world-writable. Pinning it to 1000 is what lets volume_init drop the
+    # blanket 777. Verified against the image: /mchprs is 0755 so uid 1000 can
+    # execute it, /etc/mchprs/Config.toml is world-readable so the entrypoint
+    # can still copy the template, and the entrypoint writes only into /data.
+    user: "1000:1000"
     volumes:
       - type: volume
         source: managed-files

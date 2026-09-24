@@ -169,6 +169,36 @@ assert_not_contains "$WEBDAV" "minecraft-network" "webdav is not on the minecraf
 assert_contains "$WEBDAV" "read_only: true" "the config mount is read-only"
 assert_contains "$WEBDAV" "user: 1000:1000" "webdav does not run as root"
 
+# The shared volume is governed by ownership, not by world-writability. These
+# three assertions are one mechanism and fail together on purpose.
+#
+# volume_init used to end in `chmod -R 777 /mnt/data`, which worked only
+# because it let anything write anything. It was replaced by chown to uid 1000
+# plus `o=`, which is safe ONLY while every service touching the volume runs as
+# 1000. mchprs is the one whose image runs as root by default -- measured, its
+# whole subtree was owned 0:0 -- so it needs an explicit `user:` key. Drop that
+# key and WebDAV can no longer edit any mchprs file; verified by chowning one
+# back to root, after which the WebDAV write failed.
+VINIT=$(service_block volume_init "$CONFIG")
+assert_not_contains "$VINIT" "777" "volume_init does not make the volume world-writable"
+
+# Flatten before matching. `docker compose config` re-emits a long command
+# scalar as wrapped YAML, and it breaks mid-command: the rendered text splits
+# "chown -R" from "1000:1000 /mnt/data" across two lines. A literal needle
+# spanning that break cannot match no matter how correct the compose file is.
+# Caught by this assertion failing against a config that was already right.
+VINIT_FLAT=$(printf '%s' "$VINIT" | tr '\n' ' ' | tr -s ' ')
+assert_contains "$VINIT_FLAT" "chown -R 1000:1000 /mnt/data" \
+  "volume_init gives the volume a single owner"
+assert_contains "$VINIT_FLAT" "chmod -R u=rwX,g=rwX,o= /mnt/data" \
+  "volume_init leaves no access for other uids"
+
+# Against $CONFIG, not $RAW: the rendered form normalises the quoting, so this
+# matches whether compose.yml writes 1000:1000 quoted or bare.
+MCHPRS_CFG=$(service_block mchprs "$CONFIG")
+assert_contains "$MCHPRS_CFG" "user: 1000:1000" \
+  "mchprs runs as uid 1000 so webdav can edit its files"
+
 CFD=$(service_block cloudflared "$CONFIG")
 # Assert the pinned image rather than the bare word "cloudflared", which
 # would also match the container name and prove nothing about the image.
