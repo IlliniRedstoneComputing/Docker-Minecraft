@@ -3335,6 +3335,37 @@ bash tests/test-seeder.sh
 
 Expected: FAIL — the `luckperms-init` service does not build yet if Step 1 was skipped, or groups are missing on a fresh database.
 
+**The live database is NOT in either of the two states this step imagines.** Measured
+during Task 12, on the running stack:
+
+```
+name        nodes
+admin       0
+default     0
+member      0
+onboarder   0
+```
+
+All four groups already exist, and `luckperms_group_permissions` is **empty**. So the
+database is neither fresh nor seeded — it is half-seeded, and that is the state the
+seeder will actually meet on this host.
+
+This matters for the idempotency assertions in Step 2, because it is the exact shape
+that hides the most common seeder bug: a seeder whose "already applied?" check asks
+whether the *group* exists short-circuits here, reports `changed=0`, and writes none of
+the nodes. The run looks perfectly idempotent while having done nothing at all.
+
+So test three starting states, not two:
+
+1. **empty** — no groups (drop them, or use a scratch database)
+2. **half-seeded** — groups present, nodes absent (today's live state; recreate it with
+   `DELETE FROM luckperms_group_permissions;`)
+3. **fully seeded** — the state left by a successful run, where `changed=0` is correct
+
+Only state 3 may report `changed=0`. States 1 and 2 must both report a non-zero change
+count and must both converge to the same node set. A seeder that passes 1 and 3 but not
+2 will look correct on a fresh machine and silently do nothing on this one.
+
 - [ ] **Step 4: Build and run the seeder**
 
 ```bash
