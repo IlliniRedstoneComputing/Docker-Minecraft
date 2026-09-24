@@ -1,0 +1,101 @@
+# ============================================================================
+# LuckPerms permission model -- applied on every `docker compose up`.
+# ============================================================================
+#
+# THIS FILE IS AUTHORITATIVE for the groups it names. Each managed group's
+# node set is REPLACED wholesale on every deployment, so changes made to
+# these groups through the LuckPerms web editor WILL BE OVERWRITTEN.
+#
+# Groups NOT listed here are never touched. Create an unlisted group if you
+# need somewhere to make ad-hoc runtime grants.
+#
+# ---------------------------------------------------------------------------
+# MCHPRS constraints -- read before adding permissions
+# ---------------------------------------------------------------------------
+# MCHPRS reads this data straight out of the database rather than running the
+# LuckPerms plugin, and its implementation is limited in three ways:
+#
+#   1. NEVER write a node that is a strict prefix of another node MCHPRS will
+#      query. Its matcher indexes the stored path while iterating the queried
+#      string's segments, so a stored `mchprs.command` checked against a
+#      queried `mchprs.command.foo` panics with an index-out-of-bounds.
+#      Use exact keys or an explicit `*` wildcard -- never a partial path.
+#   2. Only `global` and `mchprs` server contexts are visible to it.
+#   3. Group membership must be an explicit `group.<name>` node on the user.
+#      MCHPRS never consults the primary-group table. In practice that means
+#      a player whose only membership is the `default` group LuckPerms
+#      assigns automatically belongs to NO group as far as MCHPRS is
+#      concerned. Grant membership with `lp user <name> parent add <group>`,
+#      which writes the `group.<name>` node MCHPRS looks for.
+#
+# ---------------------------------------------------------------------------
+# Syntax
+# ---------------------------------------------------------------------------
+#   weight:       integer, higher wins for prefix and meta resolution
+#   prefix:       chat prefix; priority defaults to the group's weight
+#   inherits:     list of parent group names
+#   permissions:  either a bare string (granted globally), or a mapping with
+#                 key, optional value (false negates), optional context,
+#                 and optional expiry (epoch seconds)
+# ============================================================================
+
+groups:
+  # Everyone starts here. LuckPerms assigns `default` automatically.
+  default:
+    weight: 0
+    inherits:
+      - onboarder
+
+  # A new player who has not yet been vouched for. Confined to the
+  # onboarding server.
+  onboarder:
+    weight: 10
+    prefix: "&7[New] "
+    permissions:
+      - key: "irc.server.onboarding"
+        value: true
+      # Explicitly denied elsewhere so the deny is visible in the model
+      # rather than implied by absence.
+      - key: "irc.server.survival"
+        value: false
+      - key: "irc.server.project"
+        value: false
+
+  # A vouched member with normal play access.
+  member:
+    weight: 100
+    prefix: "&a[Member] "
+    inherits:
+      - onboarder
+    permissions:
+      - key: "irc.server.survival"
+        value: true
+      - key: "irc.server.project"
+        value: true
+      # Wildcard, not a partial path -- see the MCHPRS constraints above.
+      - key: "mchprs.command.*"
+        value: true
+        context:
+          server: mchprs
+
+  # Staff. Full administrative control.
+  admin:
+    weight: 1000
+    prefix: "&c[Admin] "
+    inherits:
+      - member
+    permissions:
+      - "luckperms.*"
+      - "minecraft.command.*"
+      - key: "mchprs.admin.*"
+        value: true
+        context:
+          server: mchprs
+
+tracks:
+  # Promotion path: lp user <name> promote onboarding
+  onboarding:
+    groups:
+      - onboarder
+      - member
+      - admin
