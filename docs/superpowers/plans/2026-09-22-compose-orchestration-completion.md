@@ -2570,10 +2570,16 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=lib.sh
 . tests/lib.sh
 
-SECRET=$(grep -E '^LUCKPERMS_SECRET=' .env | cut -d= -f2-)
-DB_USER=$(grep -E '^LUCKPERMS_DB_USER=' .env | cut -d= -f2-)
-DB_PASS=$(grep -E '^LUCKPERMS_DB_PASSWORD=' .env | cut -d= -f2-)
-DB_NAME=$(grep -E '^LUCKPERMS_DB=' .env | cut -d= -f2-)
+# tr -d '\r' on every one of these: .env is a CRLF file (CR=28, LF=29). Git
+# Bash's grep opens in text mode and strips the CR by accident, so this looks
+# unnecessary here and is not -- the same script on Linux keeps the CR, and a
+# trailing CR inside a bearer token produces a 401 that reads like a wrong
+# password rather than a line-ending bug. tests/test-webdav.sh omits this and
+# survives only because of that Git Bash accident; worth backporting.
+SECRET=$(grep -E '^LUCKPERMS_SECRET=' .env | cut -d= -f2- | tr -d '\r')
+DB_USER=$(grep -E '^LUCKPERMS_DB_USER=' .env | cut -d= -f2- | tr -d '\r')
+DB_PASS=$(grep -E '^LUCKPERMS_DB_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
+DB_NAME=$(grep -E '^LUCKPERMS_DB=' .env | cut -d= -f2- | tr -d '\r')
 
 # lp <path> -- GET the LuckPerms API through Caddy, exactly as an external
 # client would, prefix and all.
@@ -2586,8 +2592,16 @@ echo "luckperms"
 
 # The API must be reachable through the Caddy /luckperms route, which proves
 # the prefix is being stripped correctly.
+# The needle is '"healthy":true'. NOT '"up":true' -- that is the needle the
+# LuckPerms base image's own healthcheck greps for, which can never match this
+# version. AGENTS.md item 1 documents it for the container healthcheck, and
+# test-compose-config.sh already asserts the compose override does not use it.
+# Measured through Caddy on a running stack:
+#   {"healthy":true,"details":{"storageConnected":true,"storagePing":2}}
+# The REST API on 8080 and the heartbeat server on 3001 both return this same
+# schema, so the distinction between those two ports does not rescue "up".
 HEALTH=$(lp /health)
-assert_contains "$HEALTH" '"up":true' "API is healthy through the /luckperms route"
+assert_contains "$HEALTH" '"healthy":true' "API is healthy through the /luckperms route"
 
 # Storage must be the shared MariaDB, not a local H2 file.
 TABLES=$(docker compose exec -T luckperms-db \
@@ -2611,21 +2625,43 @@ done
 VH2=$(docker compose exec -T velocity sh -c 'ls /server/plugins/luckperms/ 2>/dev/null | grep -i "\.mv\.db" || echo NONE')
 assert_eq "$VH2" "NONE" "velocity created no H2 database"
 
-# Messaging: a group created through the API must become visible to a server
-# without restarting it. Poll briefly, since the SQL messenger is not instant.
+# Messaging: a group created through the API must reach a running server
+# without restarting it.
+#
+# Do NOT probe this with `rcon-cli lp listgroups`. RCON itself works on
+# survival -- `rcon-cli list` returns "There are 0 of a max of 20 players
+# online" -- but `lp listgroups` returns an EMPTY string over RCON, and the
+# output does not go to the server log either. Measured both ways. A test
+# built on it fails permanently while reporting the failure as "messaging is
+# broken", which is the worst possible way to be wrong here.
+#
+# Assert on the messenger's own log line instead. When another node writes an
+# update, LuckPerms logs:
+#   [Messaging] Received update ping with id: 74141066-09c3-4574-a9b9-264d36627c2b
+# That is the SQL messenger delivering a cross-server notification, which is
+# the property under test -- more direct than any command output.
+#
+# Count BEFORE and require the count to rise. A bare grep would pass on a ping
+# from earlier in the container's life and never fail.
 GROUP="msgtest$$"
+PINGS_BEFORE=$(docker compose logs survival 2>/dev/null | grep -c 'Received update ping')
+
 docker run --rm --network irc-frontend-network curlimages/curl:latest \
   -s -o /dev/null -H "Authorization: Bearer $SECRET" -H 'Content-Type: application/json' \
   -X POST -d "{\"name\":\"$GROUP\"}" "http://caddy:80/luckperms/group"
 
 FOUND=NO
 for _ in $(seq 1 30); do
-  if docker compose exec -T survival rcon-cli lp listgroups 2>/dev/null | grep -q "$GROUP"; then
-    FOUND=YES; break
-  fi
+  PINGS_NOW=$(docker compose logs survival 2>/dev/null | grep -c 'Received update ping')
+  if [ "$PINGS_NOW" -gt "$PINGS_BEFORE" ]; then FOUND=YES; break; fi
   sleep 2
 done
-assert_eq "$FOUND" "YES" "a new group propagates to survival without a restart"
+assert_eq "$FOUND" "YES" "a group created via the API pings survival without a restart"
+
+# And the write itself must have landed in the shared database.
+GROUPS_SQL=$(docker compose exec -T luckperms-db \
+  mariadb -u"$DB_USER" -p"$DB_PASS" -N -B -e "SELECT name FROM luckperms_groups;" "$DB_NAME" 2>/dev/null)
+assert_contains "$GROUPS_SQL" "$GROUP" "the new group is present in the shared database"
 
 docker run --rm --network irc-frontend-network curlimages/curl:latest \
   -s -o /dev/null -H "Authorization: Bearer $SECRET" \
@@ -2636,10 +2672,36 @@ finish
 
 - [ ] **Step 2: Bring the stack up in stages**
 
-Six servers at `-Xmx2G` plus Velocity exceeds a 16 GB host. Lower the heap for testing first:
+Six servers at `-Xmx2G` plus Velocity exceeds the host. Measured on this machine:
+`docker info` reports **15.3 GiB** total, and `compose.yml` defaults each of the seven
+JVMs to `${JAVA_OPTS:--Xmx2G -Xms1G}` — 14 GiB of heap before anything else. Lower it
+first.
+
+**`JAVA_OPTS` is absent from `.env` entirely.** It is in `.env.example` (line 10) but not
+in the working `.env`, so the obvious `sed -i 's|^JAVA_OPTS=.*|...|' .env` matches **zero
+lines and silently changes nothing** — every server then boots at the 2 GiB default and
+the host thrashes or the OOM killer fires, with nothing in the output to say why. Append
+when the key is missing, substitute when it is present:
 
 ```bash
-sed -i 's|^JAVA_OPTS=.*|JAVA_OPTS=-Xmx1G -Xms512M|' .env
+if grep -q '^JAVA_OPTS=' .env; then
+  perl -i -pe 's|^JAVA_OPTS=[^\r\n]*|JAVA_OPTS=-Xmx1G -Xms512M|' .env
+else
+  printf 'JAVA_OPTS=-Xmx1G -Xms512M\n' >> .env
+fi
+docker compose config | grep -m1 JAVA_OPTS
+```
+
+Expected: `JAVA_OPTS: -Xmx1G -Xms512M`. Verify this before bringing anything up — it is
+the whole point of the step, and it is the one part that fails quietly.
+
+**Use `perl -i -pe`, never `sed -i`, on `.env`.** It is a CRLF file (measured: CR=28,
+LF=29 — every line but the last), and on Git Bash `sed -i` strips the CR from *every*
+line of the file, not just the one it rewrites. See the platform section of `AGENTS.md`.
+`[^\r\n]*` rather than `.*` for the same reason: `.` matches a CR, so `.*` swallows it and
+leaves that one line LF-only inside an otherwise CRLF file.
+
+```bash
 docker compose up -d --build volume_init luckperms-db luckperms-standalone webdav caddy velocity survival mchprs
 sleep 90
 docker compose up -d --build lobby onboarding project-0 project-1
@@ -2647,7 +2709,12 @@ sleep 120
 docker compose ps
 ```
 
-Expected: every service `running`, and `luckperms-db`, `luckperms-standalone`, and `velocity` additionally `healthy`.
+Expected: every service `running`, and `luckperms-db`, `luckperms-standalone`, and
+`velocity` additionally `healthy`.
+
+**Name the services explicitly on every `up`.** A bare `docker compose up -d` also starts
+`cloudflared`, which holds a placeholder token and restart-loops. It must never be started
+locally.
 
 - [ ] **Step 3: Run the test**
 
@@ -3353,9 +3420,25 @@ Expected: exactly one line, for `velocity`, showing `25565`.
 
 - [ ] **Step 7: Restore the production heap setting**
 
+Same two traps as Task 12 Step 2: `.env` is CRLF, so `sed -i` strips the CR from every
+line of it, and the key may be absent from `.env` entirely, in which case a substitution
+matches nothing and silently leaves the test heap in place.
+
 ```bash
-sed -i 's|^JAVA_OPTS=.*|JAVA_OPTS=-Xmx2G -Xms1G|' .env
+if grep -q '^JAVA_OPTS=' .env; then
+  perl -i -pe 's|^JAVA_OPTS=[^\r\n]*|JAVA_OPTS=-Xmx2G -Xms1G|' .env
+else
+  printf 'JAVA_OPTS=-Xmx2G -Xms1G\n' >> .env
+fi
+docker compose config | grep -m1 JAVA_OPTS
 ```
+
+Expected: `JAVA_OPTS: -Xmx2G -Xms1G`.
+
+Note what this restores: 2 GiB x 7 JVMs is 14 GiB of heap, which does **not** fit the
+15.3 GiB `docker info` reports on this host. It is the production value, put back after
+testing — not a setting the full local stack can be brought up with. Anyone running the
+stack locally after this step should expect to lower it again.
 
 - [ ] **Step 8: Commit**
 

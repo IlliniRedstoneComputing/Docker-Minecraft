@@ -352,8 +352,20 @@ the remote service's own audit trail.
 
 | Check | Request | Healthy response |
 | --- | --- | --- |
-| LuckPerms | `GET /luckperms/health` | `200` with `"up":true` in the body |
+| LuckPerms | `GET /luckperms/health` | `200` with `"healthy":true` in the body |
 | WebDAV | `PROPFIND /files/ Depth: 0` | `207` |
+
+**The field is `healthy`, not `up`.** Measured through Caddy on a running stack:
+
+```json
+{"healthy":true,"details":{"storageConnected":true,"storagePing":2}}
+```
+
+This table previously said `"up":true`. That is the needle the LuckPerms base image's
+own healthcheck greps for, and it can never match this version -- the same mistake
+`AGENTS.md` item 1 documents for the container healthcheck, repeated here in the document
+an external administration tool would be built against. The REST API on 8080 and the
+heartbeat server on 3001 were both checked: they return the same schema.
 
 WebDAV has no dedicated health endpoint — the image is built `FROM scratch` and contains
 no shell or HTTP client, so a cheap `PROPFIND` is the liveness probe.
