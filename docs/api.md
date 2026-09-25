@@ -145,7 +145,8 @@ carries no per-server value. The `luckperms.conf` byte count does vary, with the
 its one per-server line, `server = "<name>"`, which is where the range comes from. What is
 identical across the five is the 684 CR and the image-to-volume equality, and that is what
 the argument rests on: the file LuckPerms only reads still has every CRLF it shipped with,
-while the file a mod loads has had all four stripped.
+while the file a mod loads has had all four stripped and a trailing newline added, which
+is where 172 becomes 169 rather than 168.
 
 So the rule is neither "config is durable" nor "config is volatile". It is a three-way
 split, and the split is mechanical enough to state as a test:
