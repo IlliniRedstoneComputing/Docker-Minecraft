@@ -11,13 +11,33 @@ services:
     # 1000 and removes access for everyone else.
     #
     # This replaced a blanket `chmod -R 777`. Every service that touches this
-    # volume runs as uid 1000 -- the five Minecraft servers and velocity via
-    # their itzg base images, webdav via `user: 1000:1000`, and mchprs via the
-    # `user:` key on its own service. Because the uid is uniform, none of them
-    # needs group or other permissions to read or write what another wrote, so
-    # `o=` costs nothing and a stray container running as some other uid can no
-    # longer write here. backup and this container run as root and are
-    # unaffected, since root bypasses the mode bits.
+    # volume ends up running as uid 1000 -- the five Minecraft servers and
+    # velocity via their itzg base images, webdav via `user: 1000:1000`, and
+    # mchprs via the `user:` key on its own service. (The itzg entrypoints do
+    # run a brief root phase before dropping privileges, but it copies files
+    # that are already owned by 1000 at build time, so it leaves nothing
+    # root-owned. Measured across full restarts: 0 files outside uid 1000.)
+    # Because the uid is uniform, none of them needs group or other permission
+    # to read or write what another wrote, so removing "other" costs nothing
+    # and a stray container running as some other uid cannot write here.
+    # backup and this container run as root and are unaffected, since root
+    # bypasses the mode bits.
+    #
+    # What this does and does NOT guarantee, measured rather than assumed:
+    #
+    #   Durable:     nothing in the volume is world-WRITABLE. That is the
+    #                property worth having and it holds across restarts.
+    #   NOT durable: `o=` is applied once, here, at init. Service entrypoints
+    #                then `cp -a` files in from their images, which restores
+    #                the image mode -- usually 0644 -- and server processes
+    #                create files under their own umask. Measured after a full
+    #                restart: 101 world-READABLE files, all owned by 1000.
+    #
+    # So do not read `o=` as "nothing here is readable by another uid". If a
+    # file in this volume must stay unreadable, the service that writes it has
+    # to set its mode; this container cannot hold that for it. The live case
+    # is velocity/forwarding.secret, which returns to 0644 on every velocity
+    # start because src/velocity/entrypoint.sh copies it with `cp -a`.
     #
     # Do NOT drop the `user:` key from mchprs without putting the 777 back.
     # mchprs is the one service whose image runs as root by default; if it
@@ -173,7 +193,9 @@ services:
     # Both Minecraft base images run as uid 1000. Matching it means files
     # created through WebDAV stay rewritable by the servers, and vice versa.
     # The image is FROM scratch and binds an unprivileged port, so it needs
-    # no root. volume_init's chmod 777 covers directory traversal.
+    # no root. Directory traversal comes from ownership: volume_init hands the
+    # whole tree to uid 1000, so matching that uid is what grants access. It
+    # used to come from a blanket chmod 777, which is gone.
     user: "1000:1000"
     environment:
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:?WEBDAV_USERNAME must be set in .env}
@@ -384,11 +406,19 @@ services:
     build:
       context: ./src/mchprs
     container_name: mchprs-server
-    # Unlike every other server image here, stackdoubleflow/mchprs runs as
-    # root, so without this it writes /data as uid 0 and WebDAV -- which runs
-    # as 1000 -- cannot modify a single mchprs file unless the whole volume is
-    # world-writable. Pinning it to 1000 is what lets volume_init drop the
-    # blanket 777. Verified against the image: /mchprs is 0755 so uid 1000 can
+    # This image runs as root, and so, without this key, writes /data as uid 0
+    # -- after which WebDAV, which runs as 1000, cannot modify a single mchprs
+    # file unless the whole volume is world-writable. Pinning it to 1000 is
+    # what lets volume_init drop the blanket 777.
+    #
+    # It runs as root because src/mchprs/Dockerfile is FROM alpine:latest and
+    # declares no USER -- NOT because stackdoubleflow/mchprs does. That image
+    # appears only as a `COPY --from=` source, and COPY --from= takes files;
+    # it never inherits the source image's USER. An earlier version of this
+    # comment blamed the upstream image, which is the same welding-two-facts-
+    # into-a-cause mistake AGENTS.md item 2 exists to warn about.
+    #
+    # Verified against the built image: /mchprs is 0755 so uid 1000 can
     # execute it, /etc/mchprs/Config.toml is world-readable so the entrypoint
     # can still copy the template, and the entrypoint writes only into /data.
     user: "1000:1000"
