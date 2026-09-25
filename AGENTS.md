@@ -168,10 +168,14 @@ evidence the node is stored.** A `group.default` row does appear once the player
 other stored node, and disappears again when that node goes. Measured against the live
 API and the database behind it.
 
-This reads as a flat contradiction of constraint 3 and is not one — it is how LuckPerms
-stores the group it assigns by default, not a failure to write the node. Grant a
-membership MCHPRS can see with `lp user <name> parent add <group>`, which writes the
-`group.<name>` node it looks for.
+This reads as a flat contradiction of constraint 3, and it is not one to go and fix. Note
+what the measurement does and does not cover: it establishes that the node is absent from
+storage and that the API reports it anyway, not *why*. The inference — **not** measured —
+is that this is consistent with LuckPerms treating the group it assigns automatically as
+implied rather than stored. The consequence for this repository holds either way: do not
+try to force a `group.default` node into storage to "repair" it. Grant a membership MCHPRS
+can see with `lp user <name> parent add <group>`, which writes the `group.<name>` node it
+looks for.
 
 ## Platform: CRLF files and the Git Bash toolchain
 

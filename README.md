@@ -67,6 +67,10 @@ so it is reached directly via a plain DNS record.
    the last ref holding it. Either merge with a real merge commit or fast-forward, or
    re-bump the four pointers to the post-merge `main` SHAs in the same change.
 
+   Do not pin them with a `branch =` key in `.gitmodules` instead: the recorded SHAs are
+   not on `main`, so `git submodule update --remote` would roll all four pointers back
+   onto the pre-fix entrypoints and present as a healthy checkout rather than an error.
+
 2. **Create `.env`** from the template and fill in real secrets:
 
    ```bash

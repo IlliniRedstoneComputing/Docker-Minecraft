@@ -132,13 +132,20 @@ handle:
   brand-new `zz-admin-probe.toml`, which also survived.
 
 The proof that the mod, and not the entrypoint's `cp -a`, is the writer is a line-ending
-conversion no copy can perform. Re-measured on the running stack on 2026-09-24, and
-identical on all five Fabric servers:
+conversion no copy can perform. Measured on the running stack on 2026-09-24, on all five
+Fabric servers:
 
 | File | In the image | Live in the volume |
 | --- | --- | --- |
 | `config/FabricProxy-Lite.toml` | 172 bytes, 4 CR | **169 bytes, 0 CR** |
-| `config/luckperms/luckperms.conf` | 33894 bytes, 684 CR | 33894 bytes, 684 CR |
+| `config/luckperms/luckperms.conf` | 33891–33896 bytes, 684 CR | identical to the image, byte for byte |
+
+The `FabricProxy-Lite.toml` figures hold on **all five** servers unchanged — that file
+carries no per-server value. The `luckperms.conf` byte count does vary, with the length of
+its one per-server line, `server = "<name>"`, which is where the range comes from. What is
+identical across the five is the 684 CR and the image-to-volume equality, and that is what
+the argument rests on: the file LuckPerms only reads still has every CRLF it shipped with,
+while the file a mod loads has had all four stripped.
 
 So the rule is neither "config is durable" nor "config is volatile". It is a three-way
 split, and the split is mechanical enough to state as a test:
