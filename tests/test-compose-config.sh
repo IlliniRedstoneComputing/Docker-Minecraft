@@ -179,19 +179,27 @@ assert_contains "$WEBDAV" "user: 1000:1000" "webdav does not run as root"
 # whole subtree was owned 0:0 -- so it needs an explicit `user:` key. Drop that
 # key and WebDAV can no longer edit any mchprs file; verified by chowning one
 # back to root, after which the WebDAV write failed.
-VINIT=$(service_block volume_init "$CONFIG")
-assert_not_contains "$VINIT" "777" "volume_init does not make the volume world-writable"
-
-# Flatten before matching. `docker compose config` re-emits a long command
-# scalar as wrapped YAML, and it breaks mid-command: the rendered text splits
-# "chown -R" from "1000:1000 /mnt/data" across two lines. A literal needle
-# spanning that break cannot match no matter how correct the compose file is.
-# Caught by this assertion failing against a config that was already right.
-VINIT_FLAT=$(printf '%s' "$VINIT" | tr '\n' ' ' | tr -s ' ')
+# One folded haystack for all four checks -- see flatten() in tests/lib.sh for
+# why folding is needed at all. Using it for every needle rather than only the
+# ones seen to wrap keeps the suite from depending on where the yaml renderer
+# happens to break.
+VINIT_FLAT=$(flatten "$(service_block volume_init "$CONFIG")")
+assert_not_contains "$VINIT_FLAT" "777" \
+  "volume_init does not make the volume world-writable"
 assert_contains "$VINIT_FLAT" "chown -R 1000:1000 /mnt/data" \
   "volume_init gives the volume a single owner"
 assert_contains "$VINIT_FLAT" "chmod -R u=rwX,g=rwX,o= /mnt/data" \
   "volume_init leaves no access for other uids"
+
+# Substring checks alone cannot see a LATER operation that undoes an earlier
+# one: `chmod -R u=rwX,g=rwX,o= /mnt/data && chmod -R o+rwx /mnt/data` contains
+# no literal 777 and satisfies both positive needles above, while leaving the
+# volume world-writable. Pin the operation count so a second mode or ownership
+# change has to be noticed rather than appended.
+VINIT_CHMODS=$(printf '%s' "$VINIT_FLAT" | grep -o 'chmod' | wc -l | tr -d ' ')
+VINIT_CHOWNS=$(printf '%s' "$VINIT_FLAT" | grep -o 'chown' | wc -l | tr -d ' ')
+assert_eq "$VINIT_CHMODS" "1" "volume_init runs exactly one chmod"
+assert_eq "$VINIT_CHOWNS" "1" "volume_init runs exactly one chown"
 
 # Against $CONFIG, not $RAW: the rendered form normalises the quoting, so this
 # matches whether compose.yml writes 1000:1000 quoted or bare.

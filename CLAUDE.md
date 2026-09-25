@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repository.
 `compose.yml` is the live definition. **`compose-old.yml` is historical — do not edit it
 and do not treat it as current intent.**
 
-## Stop — five things that look broken and are not
+## Stop — six things that look broken and are not
 
 Each has been verified against upstream source or confirmed with the maintainer. Do not
 "fix" them. Full evidence in [`AGENTS.md`](AGENTS.md) and in Appendix B of
@@ -33,6 +33,13 @@ Each has been verified against upstream source or confirmed with the maintainer.
    than the other two — its world is a disposable placeholder rather than an image-
    restored artifact — settled by the maintainer and recorded in item 5 of
    [`AGENTS.md`](AGENTS.md).
+6. **The shared data volume is governed by ownership, not by world-writability, and
+   `mchprs`'s `user: "1000:1000"` is load-bearing.** Everything that mounts
+   `managed-files` runs as uid 1000; `mchprs` is the only image that does not do so on
+   its own, so dropping that key makes it write as root and WebDAV can no longer edit
+   any mchprs file. Do not restore the old `chmod -R 777` either. Item 6 of
+   [`AGENTS.md`](AGENTS.md) has the measurements, including why `o=` is not a durable
+   promise about readability.
 
 ## Full guidance
 

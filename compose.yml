@@ -7,54 +7,49 @@ services:
     image: alpine
     volumes:
       - managed-files:/mnt/data
-    # Creates the per-server subdirectories, then hands the whole tree to uid
-    # 1000 and removes access for everyone else.
+    # Creates the per-server subdirectories, hands the whole tree to uid 1000,
+    # and removes access for every other uid. This replaced a blanket
+    # `chmod -R 777`.
     #
-    # This replaced a blanket `chmod -R 777`. Every service that touches this
-    # volume ends up running as uid 1000 -- the five Minecraft servers and
-    # velocity via their itzg base images, webdav via `user: 1000:1000`, and
-    # mchprs via the `user:` key on its own service. (The itzg entrypoints do
-    # run a brief root phase before dropping privileges, but it copies files
-    # that are already owned by 1000 at build time, so it leaves nothing
-    # root-owned. Measured across full restarts: 0 files outside uid 1000.)
-    # Because the uid is uniform, none of them needs group or other permission
-    # to read or write what another wrote, so removing "other" costs nothing
-    # and a stray container running as some other uid cannot write here.
-    # backup and this container run as root and are unaffected, since root
-    # bypasses the mode bits.
+    # WHY THIS SHAPE, and what breaks if you simplify it: AGENTS.md item 6.
+    # Read that before editing this command or before dropping the `user:` key
+    # from the mchprs service -- the two are one mechanism, not two choices.
     #
-    # What this does and does NOT guarantee, measured rather than assumed:
+    # Four details that are easy to get wrong right here:
     #
-    #   Durable:     nothing in the volume is world-WRITABLE. That is the
-    #                property worth having and it holds across restarts.
-    #   NOT durable: `o=` is applied once, here, at init. Service entrypoints
-    #                then `cp -a` files in from their images, which restores
-    #                the image mode -- usually 0644 -- and server processes
-    #                create files under their own umask. Measured after a full
-    #                restart: 101 world-READABLE files, all owned by 1000.
+    # `o=` removes access for other UIDS. It is NOT a promise that nothing in
+    # the volume is world-readable: entrypoints `cp -a` image files back in
+    # afterwards and restore their modes. AGENTS.md item 6 has the numbers.
     #
-    # So do not read `o=` as "nothing here is readable by another uid". If a
-    # file in this volume must stay unreadable, the service that writes it has
-    # to set its mode; this container cannot hold that for it. The live case
-    # is velocity/forwarding.secret, which returns to 0644 on every velocity
-    # start because src/velocity/entrypoint.sh copies it with `cp -a`.
+    # `g=rwX` is kept on purpose even though uniform ownership means nothing
+    # needs it today. It is the escape hatch for a service that later has to
+    # run under a different uid but can join gid 1000. Tighten to `g=` only
+    # once that is ruled out.
     #
-    # Do NOT drop the `user:` key from mchprs without putting the 777 back.
-    # mchprs is the one service whose image runs as root by default; if it
-    # writes /data as root again, WebDAV (uid 1000) can no longer edit any
-    # mchprs file, which is the whole point of exposing the volume over WebDAV.
+    # capital X sets execute on directories, and on files that already had it,
+    # rather than marking every file +x -- which is why this is not plain
+    # `u=rw,g=rw`, since directories still need traversal. Modes in the tree
+    # are mixed as a result: most jars land 660, the ones that shipped
+    # executable stay 770. Counts are deliberately not quoted here; they move
+    # with every mod bump.
     #
-    # capital X in the mode sets execute on directories, and on files that
-    # already had it, rather than marking every file +x. Verified on this tree:
-    # the Fabric jars stay -rw-rw---- while 305 already-executable files keep
-    # it. Measured cost of the recursive pass: 2142 inodes, under a second.
+    # Self-healing, which is the strongest property this has: it runs on every
+    # `up`, ahead of every server via
+    # `volume_init: condition: service_completed_successfully`, so a root-owned
+    # file that drifts in is chowned back rather than accumulating. It does not
+    # merely prevent drift, it repairs it. Measured ~2150 inodes in 0.31s, so
+    # the recursive pass costs nothing worth optimising. The `&&` chain also
+    # means a failed chown aborts before the chmod and blocks every dependent,
+    # which is right for a permissions migration: a half-migrated tree should
+    # not boot servers.
     #
-    # Migrating an EXISTING deployment has one ordering hazard: a service
-    # still running as root can flush state to disk after this container has
-    # already chowned the tree, leaving files uid 1000 cannot write. Hit once,
-    # by mchprs writing a plot on shutdown. A normal `up` is unaffected, since
-    # this runs to completion before any server starts. To heal it, stop the
-    # offending service and recreate this one.
+    # Migration hazard, hit once: a service still running as root can flush
+    # state to disk AFTER this container has chowned the tree. The symptom is
+    # not a crash, which is what makes it worth writing down -- mchprs panicked
+    # its plot thread with PermissionDenied (plot/mod.rs:1192) and kept serving,
+    # silently losing every plot save. Detect with:
+    #   docker run --rm -v irc-minecraft_managed-files:/m alpine find /m ! -user 1000
+    # Heal by stopping the offending service and recreating this one.
     command: >
       sh -c "mkdir -p /mnt/data/velocity /mnt/data/lobby /mnt/data/survival
       /mnt/data/onboarding /mnt/data/mchprs /mnt/data/project-0
@@ -193,9 +188,9 @@ services:
     # Both Minecraft base images run as uid 1000. Matching it means files
     # created through WebDAV stay rewritable by the servers, and vice versa.
     # The image is FROM scratch and binds an unprivileged port, so it needs
-    # no root. Directory traversal comes from ownership: volume_init hands the
-    # whole tree to uid 1000, so matching that uid is what grants access. It
-    # used to come from a blanket chmod 777, which is gone.
+    # no root. Directory traversal comes from ownership, not from a mode:
+    # volume_init hands the whole tree to uid 1000, so matching that uid is
+    # what grants access. AGENTS.md item 6 has the mechanism.
     user: "1000:1000"
     environment:
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:?WEBDAV_USERNAME must be set in .env}
@@ -406,21 +401,9 @@ services:
     build:
       context: ./src/mchprs
     container_name: mchprs-server
-    # This image runs as root, and so, without this key, writes /data as uid 0
-    # -- after which WebDAV, which runs as 1000, cannot modify a single mchprs
-    # file unless the whole volume is world-writable. Pinning it to 1000 is
-    # what lets volume_init drop the blanket 777.
-    #
-    # It runs as root because src/mchprs/Dockerfile is FROM alpine:latest and
-    # declares no USER -- NOT because stackdoubleflow/mchprs does. That image
-    # appears only as a `COPY --from=` source, and COPY --from= takes files;
-    # it never inherits the source image's USER. An earlier version of this
-    # comment blamed the upstream image, which is the same welding-two-facts-
-    # into-a-cause mistake AGENTS.md item 2 exists to warn about.
-    #
-    # Verified against the built image: /mchprs is 0755 so uid 1000 can
-    # execute it, /etc/mchprs/Config.toml is world-readable so the entrypoint
-    # can still copy the template, and the entrypoint writes only into /data.
+    # LOAD-BEARING -- see AGENTS.md item 6 before removing. This image runs as
+    # root (alpine base, no USER), so without this key it writes /data as uid 0
+    # and WebDAV, which runs as 1000, can no longer edit any mchprs file.
     user: "1000:1000"
     volumes:
       - type: volume

@@ -89,6 +89,28 @@ assert_in() {
   esac
 }
 
+# flatten <text> -- collapse newlines and runs of spaces to single spaces.
+#
+# For matching against `docker compose config` output. The renderer re-emits a
+# long command scalar as WRAPPED yaml and breaks it mid-command: a
+# `chown -R 1000:1000 /mnt/data` comes back with the line ending after `-R`.
+# A literal needle spanning that break cannot match however correct the compose
+# file is -- measured, after an assertion failed against a config that was
+# already right.
+#
+# Fold before matching, and fold for EVERY needle against that haystack rather
+# than only the ones observed to wrap, since where the renderer chooses to break
+# is not a property any test should depend on.
+#
+# The cost: folding joins adjacent yaml keys, so a needle could in principle
+# match across a key boundary that does not exist in the source. Keep needles
+# specific enough that this cannot bite -- a bare word like `777` is fine
+# because the renderer only ever folds at whitespace, so a short token cannot
+# straddle a break.
+flatten() {
+  printf '%s' "$1" | tr '\n' ' ' | tr -s ' '
+}
+
 # service_block <name> <yaml> -- print one top-level service's block.
 #
 # Works on both the rendered config and the raw compose.yml. The block ends

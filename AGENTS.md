@@ -106,6 +106,55 @@ as a code artifact the way `lobby`'s is, at which point this becomes the same ca
 `lobby`. Until then there is nothing to protect, and the backup set is correct as it
 stands. Do not reopen this, and do not add `onboarding` to `backup`.
 
+### 6. The shared volume is governed by ownership, and `mchprs` needs `user: 1000:1000`
+
+Every service that mounts `managed-files` ends up running as **uid 1000**. `volume_init`
+therefore hands the whole tree to `1000:1000` and sets `u=rwX,g=rwX,o=`. Two things
+about that look removable and are not.
+
+**Do not drop `user: "1000:1000"` from the `mchprs` service.** Every other server image
+already runs as 1000 — the five Fabric servers and `velocity` via their itzg bases,
+`webdav` via its own `user:` key. `mchprs` does not: `src/mchprs/Dockerfile` is
+`FROM alpine:latest` and declares no `USER`, so without this key it writes `/data` as
+root. (It is **not** inherited from `stackdoubleflow/mchprs` — that appears only as a
+`COPY --from=` source, and `COPY --from=` never contributes the source image's `USER`.
+Verified: `docker image inspect --format '{{.Config.User}}'` on the built image is
+empty.) Once mchprs writes as root, WebDAV — uid 1000 — can no longer edit a single
+mchprs file, which is the point of exposing the volume over WebDAV at all. Measured:
+chowning one mchprs file back to root made the WebDAV write fail.
+
+**Do not widen `o=` back to `777` "so everything can write".** That is what this
+replaced. Uniform ownership is what grants access now; world-writability added nothing
+except a larger blast radius.
+
+What the mode does and does not guarantee, measured rather than assumed:
+
+- **Durable:** nothing in the volume is world-**writable**, and nothing is owned by a
+  uid other than 1000. `volume_init` re-runs on every `up`, before any server starts,
+  so drift is *healed* rather than merely prevented. Measured: ~2150 inodes in 0.31s.
+- **Not durable:** `o=` itself. Service entrypoints `cp -a` files in from their images
+  afterwards, which restores the image's mode, and server processes create files under
+  their own umask. Measured after a full restart: 101 world-**readable** files, all
+  owned by 1000.
+
+So do not read `o=` as "nothing here is readable by another uid". If a file must stay
+unreadable, the service that writes it has to set its own mode — `volume_init` completes
+before that service starts and cannot hold it. The live case is
+`velocity/forwarding.secret`, which returns to `0644` on every velocity start; tracked
+as deferral 7 under Task 19 Step 2b of the completion plan.
+
+**Migration hazard, hit once.** A service still running as root can flush state to disk
+*after* `volume_init` has chowned the tree, leaving a file uid 1000 cannot write. The
+symptom is not a crash: MCHPRS panicked its plot thread with `PermissionDenied`
+(`plot/mod.rs:1192`) and kept serving, silently losing every plot save. A normal `up`
+cannot hit this, since every server gates on
+`volume_init: condition: service_completed_successfully`. Detect and heal with:
+
+```bash
+docker run --rm -v irc-minecraft_managed-files:/m alpine find /m ! -user 1000
+docker compose stop <offending-service> && docker compose up -d --force-recreate volume_init
+```
+
 ## Platform: CRLF files and the Git Bash toolchain
 
 Most tracked text files here are **CRLF**: `compose.yml`, `.gitignore`,
