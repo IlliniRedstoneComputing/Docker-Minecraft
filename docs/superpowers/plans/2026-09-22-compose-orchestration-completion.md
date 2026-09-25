@@ -5117,7 +5117,9 @@ Expected: one line in each — the intentional world re-sync is intact.
 
 Items 1-4 were declined during Tasks 8, 9 and 10 on the explicit grounds that they
 should change across the whole entrypoint family at once, rather than splitting it.
-This is that moment. None of them is a bug today. Item 5 came later, from Task 12.
+This is that moment. None of items 1-4 is a bug today. Item 5 came later, from
+Task 12, item 6 from Task 14's quality review, and item 7 from the scope review
+of the volume-permission change in Task 17.
 
 1. **`CONFIG_DIR` is used once while the same prefix is hardcoded three more times.**
    In all five Fabric entrypoints, `CONFIG_DIR="/usr/src/init_data/config"` is used
@@ -5187,22 +5189,67 @@ This is that moment. None of them is a bug today. Item 5 came later, from Task 1
    the asymmetry that makes it awkward to leave open: `seed.py`'s own dependency is
    pinned exactly, `PyYAML==6.0.2`, while the service it exists to talk to is not.
 
+7. **`velocity/forwarding.secret` returns to mode `0644` on every velocity start.**
+   Found by the scope review of the volume-permission change, which replaced
+   `volume_init`'s blanket `chmod -R 777` with ownership-based access.
+   `volume_init` applies `o=` once, at init; `src/velocity/entrypoint.sh` then
+   copies the secret into the volume with `cp -a` from
+   `/usr/src/init_data/forwarding.secret`, which is `0644` in the image, so the
+   world-readable mode is restored on every start. Measured directly rather than
+   inferred: the file reads `-rw-rw----` before a `docker compose restart velocity`
+   and `-rw-r--r--` after, matching the image's mode.
+
+   **Unlike items 1-6 this is live rather than latent**, though the blast radius is
+   small. The file is the Velocity modern-forwarding secret, which is what
+   authenticates backend servers to the proxy, and it sits world-readable inside a
+   volume that only uid-1000 containers mount. Nothing on this host runs as another
+   uid, so nothing can read it today that could not already read it as 1000. It
+   becomes real the moment anything else mounts that volume.
+
+   The fix belongs in `src/velocity/entrypoint.sh`, not in `volume_init`. Only the
+   writer of a file can hold its mode: `volume_init` runs to completion before any
+   service starts, so whatever it sets is overwritten by the first `cp -a` that
+   follows. Replace that copy with one that sets the mode — `install -m 600`, or
+   `cp` followed by an explicit `chmod 600`.
+
+   Decide at the same time whether the other entrypoints' `cp -a` of config
+   templates deserves the same treatment, since that is the same "change the whole
+   entrypoint family at once" argument that deferred items 1-4. Note that the
+   general case is weaker than this one: a mod jar or a `lithium.properties` being
+   world-readable is not interesting, and `forwarding.secret` is the only copied
+   file that is actually a secret.
+
+   Deferred at the maintainer's explicit direction, not declined on scope.
+
 ```bash
 grep -n 'CONFIG_DIR\|/usr/src/init_data' src/*/entrypoint.sh
 grep -H '^set ' src/*/entrypoint.sh
 grep -n 'content=$(cat' src/*/entrypoint.sh
 grep -c 'tr -d' tests/test-webdav.sh
 grep -n ':latest' compose.yml src/*/Dockerfile
+grep -n 'forwarding.secret' src/velocity/entrypoint.sh
 ```
 
-Expected, once all six items are closed: no single file both defines `CONFIG_DIR`
+For item 7, the check that matters is not the grep but the live mode, because the
+image is what sets it:
+
+```bash
+docker compose restart velocity && sleep 20
+docker run --rm -v irc-minecraft_managed-files:/m alpine:latest \
+  ls -ln /m/velocity/forwarding.secret
+```
+
+Expected once item 7 is closed: `-rw-------`, and still owned `1000 1000`.
+
+Expected, once all seven items are closed: no single file both defines `CONFIG_DIR`
 and spells out the literal `/usr/src/init_data` prefix, all seven `set` lines agree,
-and `test-webdav.sh` reports 2 rather than 0. Before they are closed, this block is a
-status report rather than a test — none of the six is a bug on this host
-today. Item 5 is the only one that becomes a real failure off it, and item 6 the
-only one that can start failing here without anyone touching this repository.
-Item 6 is also the only one with no single right answer, so its grep is a prompt to
-decide rather than a target to reach.
+`test-webdav.sh` reports 2 rather than 0, and `forwarding.secret` comes back
+`-rw-------` after a velocity restart. Before they are closed, this block is mostly a
+status report rather than a test — items 1-4 are not bugs on this host today.
+Item 5 is the only one that becomes a real failure off it; item 6 the only one that
+can start failing here without anyone touching this repository; and item 7 the only
+one that is already true, here, now. Item 6 is also the only one with no single right
+answer, so its grep is a prompt to decide rather than a target to reach.
 
 Decide each item explicitly. Leaving one open is a legitimate outcome, but record the
 decision here rather than letting it lapse — every one of these was already declined
