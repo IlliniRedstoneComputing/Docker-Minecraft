@@ -3,9 +3,11 @@
 What this deployment exposes to the outside world, and how a remote administration
 service should talk to it.
 
-> **Status:** implemented and verified against a running stack. The cloudflared
-> hop is configured but not exercised end-to-end; everything from Caddy inward
-> is covered by `tests/`.
+> **Status:** implemented and verified against a running stack. The cloudflared hop is
+> configured but not exercised end-to-end. Automated coverage is the four suites listed
+> under [Tests](../README.md#tests) in the README, which is a narrower set than this
+> document describes; claims outside it, including the endpoint tables and the config
+> caveat below, were measured by hand on the dates given.
 
 ## Overview
 
@@ -119,9 +121,8 @@ onboarding world is published into the image this becomes the same case as `lobb
 
 **Caveat on `<server>/config/**`.** "Durable" in that row means the *seeding* policy will
 not overwrite the file. It does not mean a running mod will leave it alone.
-`FabricProxy-Lite` parses its TOML through night-config and **writes the file back** — on
-load, and again at JVM shutdown. Two consequences a remote administration service has to
-handle:
+`FabricProxy-Lite` **writes its own config file back** — on load, and again at JVM
+shutdown. Two consequences a remote administration service has to handle:
 
 - **Comments do not survive.** An appended `# comment` is gone within about ten seconds
   of boot.
@@ -155,20 +156,49 @@ split, and the split is mechanical enough to state as a test:
    `config/luckperms/luckperms.conf`, which LuckPerms reads and does not rewrite.
 2. **Mod-owned, shipped.** Shipped in the image and rewritten by a loaded mod. Today that
    is `config/FabricProxy-Lite.toml` alone.
-3. **Mod-owned, generated.** Not in the image at all; a mod created it on first boot. At
-   the time of writing: `config/ferritecore.mixin.properties`, `config/lithium.properties`,
-   and `config/spark/config.json`. These were **not** individually tested for
-   rewrite-on-shutdown — they are treated as category 2 because their writer is a running
-   mod.
+3. **Mod-owned, generated.** Not in the image at all; a mod created it on first boot.
+   **This set differs from server to server** — it is whatever mods that server loads. At
+   the time of writing, among the top-level `config/*` files:
+   `ferritecore.mixin.properties` and `lithium.properties` on `lobby`, `survival` and
+   `onboarding`; those two plus `c2me.toml` and `vmp.properties` on `project-0` and
+   `project-1`. None were individually tested for rewrite-on-shutdown — they are treated
+   as category 2 because their writer is a running mod.
 
-Do not treat that category-3 list as exhaustive. It is whatever mods happen to be loaded,
-so it changes with a mod bump. Derive it instead of hardcoding it: **anything in
-`/data/config` with no counterpart in `/usr/src/init_data/config` was created by a mod,
-and is therefore owned by one.**
+Do not hardcode that list, and do not check one server and generalize from it — the
+project servers already carry two files the others do not. Derive it. **Compare the
+top-level files of `config/` against the image's**, which on every server ships
+`FabricProxy-Lite.toml` and a `luckperms/` directory and nothing else:
 
-**So:** stop the target server before editing anything in category 2 or 3, and never rely
-on a comment as a carrier for anything — in a mod-owned file it will not survive the next
-boot.
+```bash
+docker compose exec <service> sh -c '
+  ls -p /data/config              | grep -v / | sort > /tmp/live
+  ls -p /usr/src/init_data/config | grep -v / | sort > /tmp/img
+  comm -23 /tmp/live /tmp/img'
+```
+
+Two things about that command. **It is an operator action, not an API call.**
+`/usr/src/init_data` is image content and WebDAV exposes only the volume, so a remote
+service cannot run this comparison itself. What it can do is lean on a fact that holds
+across this deployment today — *every* top-level file in `config/` is mod-owned, category
+2 or 3 — and treat the whole top level as mod-owned by default. That is an approximation
+standing in for the test, and it holds only until an inert file is added beside them.
+
+**And keep the comparison top-level.** Run against the whole tree it returns 41 entries on
+`lobby`, `survival` and `onboarding` and 43 on the project servers, because
+`config/luckperms/translations/` is a 35-file bundle LuckPerms downloads and
+`config/spark/` holds the profiler's scratch files — "stop the server before editing this"
+is not useful advice about a downloaded translation file. Those two subdirectories are
+known quantities and need no test: `config/luckperms/luckperms.conf` is category 1, its
+`translations/` sibling is a mod-owned cache that should not be hand-edited, and
+`config/spark/config.json` is mod-generated — treat it as category 2.
+
+**So, for a remote administration service:** never rely on a comment as a carrier for
+anything, because in a mod-owned file it will not survive the next boot; and treat any
+edit to a category 2 or 3 file as one that needs the server stopped first. **Neither
+surface in this document can stop a server — there is no lifecycle endpoint here.**
+Stopping one is an operator action on the host (`docker compose stop <service>`), so the
+service should gate such edits behind that step, or surface the caveat to the human making
+the edit, rather than looking for a restart call it will not find.
 
 ### Two required client behaviors
 

@@ -7,9 +7,11 @@ and do not treat it as current intent.**
 
 ## Stop — seven things that look broken and are not
 
-Each has been verified against upstream source or confirmed with the maintainer. Do not
-"fix" them. Full evidence in [`AGENTS.md`](AGENTS.md) and in Appendix B of
+Each has been verified against upstream source, measured against the running stack, or
+confirmed with the maintainer. Do not "fix" them. Full evidence in
+[`AGENTS.md`](AGENTS.md), and for **items 1-5** also in Appendix B of
 [`docs/superpowers/specs/2026-09-22-compose-orchestration-completion-design.md`](docs/superpowers/specs/2026-09-22-compose-orchestration-completion-design.md).
+Items 6 and 7 postdate that appendix; their measurements are in `AGENTS.md` only.
 
 1. **`luckperms-standalone`'s healthcheck must stay overridden, and 3001 is the right
    port.** 3001 is the standalone heartbeat server, separate from the REST API's 8080.

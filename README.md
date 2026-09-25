@@ -71,6 +71,9 @@ so it is reached directly via a plain DNS record.
    not on `main`, so `git submodule update --remote` would roll all four pointers back
    onto the pre-fix entrypoints and present as a healthy checkout rather than an error.
 
+   This note has an expiry test: when `git submodule status` reports `heads/main` for all
+   four, the branches have merged, the hazard is gone, and the note should be deleted.
+
 2. **Create `.env`** from the template and fill in real secrets:
 
    ```bash
@@ -194,8 +197,9 @@ overhead. On a smaller host, lower `JAVA_OPTS` in `.env` or start the servers in
 
 ## Tests
 
-The suites under `tests/` exercise a running stack, so bring it up first — see the
-resource note above. Then:
+Three of the four suites under `tests/` exercise a running stack, so bring it up first —
+see the resource note above. The fourth, `test-compose-config.sh`, is static and needs
+nothing running. Then:
 
 ```bash
 bash tests/run-all.sh
@@ -204,7 +208,7 @@ bash tests/run-all.sh
 | Suite | Covers |
 | --- | --- |
 | `test-compose-config.sh` | Static validation of the rendered config: one published port, shared-volume ownership, the WebDAV and cloudflared service shapes, the LuckPerms healthcheck needle, consistent credential defaults |
-| `test-webdav.sh` | WebDAV through Caddy: prefix handling, `Destination` rewriting, writes into server-created directories, and that neither route's prefix leaks onto a longer path |
+| `test-webdav.sh` | WebDAV through Caddy: prefix handling, `Destination` rewriting, writes into a collection the client creates with `MKCOL`, and that neither route's prefix leaks onto a longer path |
 | `test-luckperms.sh` | Shared MariaDB storage on every server, no H2 fallback, cross-server messaging |
 | `test-seeder.sh` | That hyphenated permission contexts are accepted, and that the permission model applies correctly and re-running it changes nothing |
 

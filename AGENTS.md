@@ -9,11 +9,12 @@ and do not use it as a reference for current intent.**
 
 ## Verified behaviors — do NOT "fix" these
 
-Each item below looks like a bug, has been investigated against upstream sources or
-confirmed with the maintainer, and is correct. Changing them will break something.
-Verification evidence is in
+Each item below looks like a bug, has been investigated against upstream sources,
+measured against the running stack, or confirmed with the maintainer, and is correct.
+Changing them will break something. Verification evidence for **items 1-5** is in
 [`docs/superpowers/specs/2026-09-22-compose-orchestration-completion-design.md`](docs/superpowers/specs/2026-09-22-compose-orchestration-completion-design.md),
-Appendix B.
+Appendix B. **Items 6 and 7 postdate that appendix** and carry their measurements inline
+here.
 
 ### 1. The `luckperms-standalone` healthcheck must be overridden, and port 3001 is correct
 
@@ -168,6 +169,14 @@ evidence the node is stored.** A `group.default` row does appear once the player
 other stored node, and disappears again when that node goes. Measured against the live
 API and the database behind it.
 
+**What it costs today: nothing.** No permission MCHPRS reads is reachable from `default`
+or `onboarder`. `permissions.yml` puts `mchprs.command.*` on `member` (weight 100) and
+`mchprs.admin.*` on `admin`, and neither is inherited downward, so a `default`-only player
+has nothing on the mchprs server to lose. **That changes the moment a permission MCHPRS
+reads is attached to `default` or `onboarder`** — from then on such a player would simply
+not receive it, presenting as a silently missing grant rather than as an error. The
+trigger is the durable half of this; the current cost is not.
+
 This reads as a flat contradiction of constraint 3, and it is not one to go and fix. Note
 what the measurement does and does not cover: it establishes that the node is absent from
 storage and that the API reports it anyway, not *why*. The inference — **not** measured —
@@ -242,7 +251,9 @@ implementation is limited in three ways that constrain how permissions are writt
 2. **Only `global` and `mchprs` server contexts are visible to it.**
 3. **Group membership must be an explicit `group.<name>` node on the user.** MCHPRS
    resolves inheritance through `group.`-prefixed nodes and never consults the
-   `luckperms_players` primary-group table.
+   `luckperms_players` primary-group table. A player whose only membership is the
+   auto-assigned `default` group therefore has no stored node at all — see item 7 above
+   for why that is not a defect in this constraint.
 
 MCHPRS also has no messaging support; it rebuilds its cache per player on join, so
 permission changes take effect on relog rather than needing a restart.
