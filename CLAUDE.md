@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repository.
 `compose.yml` is the live definition. **`compose-old.yml` is historical — do not edit it
 and do not treat it as current intent.**
 
-## Stop — six things that look broken and are not
+## Stop — seven things that look broken and are not
 
 Each has been verified against upstream source or confirmed with the maintainer. Do not
 "fix" them. Full evidence in [`AGENTS.md`](AGENTS.md) and in Appendix B of
@@ -40,6 +40,12 @@ Each has been verified against upstream source or confirmed with the maintainer.
    any mchprs file. Do not restore the old `chmod -R 777` either. Item 6 of
    [`AGENTS.md`](AGENTS.md) has the measurements, including why `o=` is not a durable
    promise about readability.
+7. **A `default`-only player having no stored `group.default` node is not a bug in the
+   MCHPRS group-membership constraint.** LuckPerms does not persist a user whose only
+   membership is the auto-assigned `default` group, so MCHPRS sees that player in no
+   group — while `GET /user/{id}` still reports `group.default` for them, so the API view
+   is not evidence the node is stored. Item 7 of [`AGENTS.md`](AGENTS.md) has the
+   measurement.
 
 ## Full guidance
 

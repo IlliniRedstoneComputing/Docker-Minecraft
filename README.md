@@ -56,6 +56,17 @@ so it is reached directly via a plain DNS record.
    git submodule update --init --recursive
    ```
 
+   The four server submodules are pinned to commits on the
+   `claude/luckperms-seeding-fixes` branch of their repositories, not to `main`. Until
+   those branches are merged, do not delete or force-push them — a gitlink records a
+   bare SHA, and if no ref on the remote still reaches it, `git submodule update` fails
+   and the checkout cannot be completed.
+
+   Merging them needs care: a squash or rebase merge writes a new commit, so the pinned
+   SHA survives only on the branch, and "automatically delete head branches" then removes
+   the last ref holding it. Either merge with a real merge commit or fast-forward, or
+   re-bump the four pointers to the post-merge `main` SHAs in the same change.
+
 2. **Create `.env`** from the template and fill in real secrets:
 
    ```bash
@@ -136,7 +147,10 @@ on every `docker compose up`.
 
 **That file is authoritative for the groups it manages.** Changes made to a managed group
 through the LuckPerms web editor are overwritten on the next start. Groups absent from
-the file are never touched, so ad-hoc groups remain available as an escape hatch.
+the file are never touched, so ad-hoc groups remain available as an escape hatch —
+provided the ad-hoc group outweighs any managed group that denies the same key, since the
+highest-weight value wins. [`docs/api.md`](docs/api.md#some-groups-are-managed-in-code)
+has the measured detail.
 
 ### LuckPerms configuration comes from the environment
 
@@ -173,6 +187,25 @@ docker compose up --force-recreate luckperms-init
 
 Six servers at `-Xmx2G` plus Velocity is roughly 14 GB of heap before MariaDB and
 overhead. On a smaller host, lower `JAVA_OPTS` in `.env` or start the servers in stages.
+
+## Tests
+
+The suites under `tests/` exercise a running stack, so bring it up first — see the
+resource note above. Then:
+
+```bash
+bash tests/run-all.sh
+```
+
+| Suite | Covers |
+| --- | --- |
+| `test-compose-config.sh` | Static validation of the rendered config: one published port, shared-volume ownership, the WebDAV and cloudflared service shapes, the LuckPerms healthcheck needle, consistent credential defaults |
+| `test-webdav.sh` | WebDAV through Caddy: prefix handling, `Destination` rewriting, writes into server-created directories, and that neither route's prefix leaks onto a longer path |
+| `test-luckperms.sh` | Shared MariaDB storage on every server, no H2 fallback, cross-server messaging |
+| `test-seeder.sh` | That hyphenated permission contexts are accepted, and that the permission model applies correctly and re-running it changes nothing |
+
+`run-all.sh` fails the run if any suite fails **or** exits 0 without reaching its summary
+line — a suite that died early would otherwise pass silently.
 
 ## Documentation
 

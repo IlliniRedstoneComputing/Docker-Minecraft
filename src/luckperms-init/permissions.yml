@@ -32,14 +32,9 @@
 #      Use exact keys or an explicit `*` wildcard -- never a partial path.
 #   2. Only `global` and `mchprs` server contexts are visible to it.
 #   3. Group membership must be an explicit `group.<name>` node on the user.
-#      MCHPRS never consults the primary-group table. That matters because
-#      LuckPerms does not persist a user whose only membership is the
-#      `default` group it assigns automatically: such a player gets a row in
-#      `luckperms_players` and NO rows at all in `luckperms_user_permissions`,
-#      so MCHPRS sees them in no group. Measured -- and note that the REST API
-#      reports `group.default` on that same player, so the API view is not
-#      evidence the node is stored. A `group.default` row does appear once the
-#      player has some other stored node, and disappears again when it goes.
+#      MCHPRS never consults the primary-group table, and a player whose only
+#      membership is the auto-assigned `default` group has no stored node at
+#      all -- see item 7 of AGENTS.md for that measurement.
 #      Grant membership with `lp user <name> parent add <group>`, which writes
 #      the `group.<name>` node MCHPRS looks for.
 #

@@ -3,9 +3,9 @@
 What this deployment exposes to the outside world, and how a remote administration
 service should talk to it.
 
-> **Status:** describes the deployment as specified in
-> [`superpowers/specs/2026-09-22-compose-orchestration-completion-design.md`](superpowers/specs/2026-09-22-compose-orchestration-completion-design.md).
-> Items marked **unverified** have not yet been exercised against a running stack.
+> **Status:** implemented and verified against a running stack. The cloudflared
+> hop is configured but not exercised end-to-end; everything from Caddy inward
+> is covered by `tests/`.
 
 ## Overview
 
@@ -116,6 +116,51 @@ confirmed that world is a **disposable placeholder**, so discarding it loses not
 note that it is the one "No" row where a write would in fact persist. Once a real
 onboarding world is published into the image this becomes the same case as `lobby`. See
 [`AGENTS.md`](../AGENTS.md) item 5.
+
+**Caveat on `<server>/config/**`.** "Durable" in that row means the *seeding* policy will
+not overwrite the file. It does not mean a running mod will leave it alone.
+`FabricProxy-Lite` parses its TOML through night-config and **writes the file back** — on
+load, and again at JVM shutdown. Two consequences a remote administration service has to
+handle:
+
+- **Comments do not survive.** An appended `# comment` is gone within about ten seconds
+  of boot.
+- **Edits made while the server is running are silently discarded at shutdown**, because
+  the mod serializes its in-memory state over whatever is on disk. Only edits made while
+  the server is stopped, or applied through the game, are safe. Value edits made while
+  stopped do persist: verified with `disconnectMessage` across a restart, alongside a
+  brand-new `zz-admin-probe.toml`, which also survived.
+
+The proof that the mod, and not the entrypoint's `cp -a`, is the writer is a line-ending
+conversion no copy can perform. Re-measured on the running stack on 2026-09-24, and
+identical on all five Fabric servers:
+
+| File | In the image | Live in the volume |
+| --- | --- | --- |
+| `config/FabricProxy-Lite.toml` | 172 bytes, 4 CR | **169 bytes, 0 CR** |
+| `config/luckperms/luckperms.conf` | 33894 bytes, 684 CR | 33894 bytes, 684 CR |
+
+So the rule is neither "config is durable" nor "config is volatile". It is a three-way
+split, and the split is mechanical enough to state as a test:
+
+1. **Inert, durable.** Shipped in the image and byte-identical after boot. Today that is
+   `config/luckperms/luckperms.conf`, which LuckPerms reads and does not rewrite.
+2. **Mod-owned, shipped.** Shipped in the image and rewritten by a loaded mod. Today that
+   is `config/FabricProxy-Lite.toml` alone.
+3. **Mod-owned, generated.** Not in the image at all; a mod created it on first boot. At
+   the time of writing: `config/ferritecore.mixin.properties`, `config/lithium.properties`,
+   and `config/spark/config.json`. These were **not** individually tested for
+   rewrite-on-shutdown — they are treated as category 2 because their writer is a running
+   mod.
+
+Do not treat that category-3 list as exhaustive. It is whatever mods happen to be loaded,
+so it changes with a mod bump. Derive it instead of hardcoding it: **anything in
+`/data/config` with no counterpart in `/usr/src/init_data/config` was created by a mod,
+and is therefore owned by one.**
+
+**So:** stop the target server before editing anything in category 2 or 3, and never rely
+on a comment as a carrier for anything — in a mod-owned file it will not survive the next
+boot.
 
 ### Two required client behaviors
 
@@ -270,11 +315,10 @@ Node fields:
 omitting the node. `context` is an array of `{key, value}` pairs; an empty array means
 global. `expiry` is epoch seconds and is optional.
 
-> **Unverified:** the OpenAPI schema declares context keys and values as
-> `^[a-z0-9]+$`, which would reject `project-0` and `project-1` because of the hyphen,
-> even though LuckPerms itself permits hyphens in contexts. The schema is also
-> inconsistent about whether `context` is an array or an object. Confirm both against a
-> running instance before relying on per-server contexts for the project servers.
+> **Verified:** hyphenated context values such as `project-0` are accepted, even
+> though the OpenAPI schema declares context keys and values as `^[a-z0-9]+$`.
+> The schema is stricter than the implementation. `context` is sent as an array
+> of `{key, value}` pairs.
 
 ### Examples
 
@@ -337,6 +381,13 @@ service makes to a managed group will be reverted on the next deployment.
 Groups *not* in that file are never touched and are safe for runtime management. A remote
 administration service should read that file, or maintain its own list, and mark managed
 groups read-only in its UI.
+
+**"Never touched" is not the same as "always effective."** A user's parent groups resolve
+highest-weight-first and the first value found wins, so an ad-hoc group weighted below a
+managed group that **denies** the same key loses — silently, with no error anywhere.
+Measured against the live API: against `onboarder`'s deny of `irc.server.survival` at
+weight 10, an ad-hoc grant of that key resolves false at weight 0 and true at weight 11.
+Give an ad-hoc group a weight above every managed group that denies a key it grants.
 
 ### Actions and audit
 

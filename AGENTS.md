@@ -155,6 +155,24 @@ docker run --rm -v irc-minecraft_managed-files:/m alpine find /m ! -user 1000
 docker compose stop <offending-service> && docker compose up -d --force-recreate volume_init
 ```
 
+### 7. A `default`-only player has no stored `group.default` node
+
+LuckPerms does not persist a user whose only membership is the `default` group it assigns
+automatically. Such a player gets a row in `luckperms_players` and **no rows at all** in
+`luckperms_user_permissions`, so MCHPRS — which resolves membership only through stored
+`group.`-prefixed nodes, per constraint 3 under
+[MCHPRS permission constraints](#mchprs-permission-constraints) — sees them in no group.
+
+`GET /user/{id}` reports `group.default` for that same player, so **the API view is not
+evidence the node is stored.** A `group.default` row does appear once the player has some
+other stored node, and disappears again when that node goes. Measured against the live
+API and the database behind it.
+
+This reads as a flat contradiction of constraint 3 and is not one — it is how LuckPerms
+stores the group it assigns by default, not a failure to write the node. Grant a
+membership MCHPRS can see with `lp user <name> parent add <group>`, which writes the
+`group.<name>` node it looks for.
+
 ## Platform: CRLF files and the Git Bash toolchain
 
 Most tracked text files here are **CRLF**: `compose.yml`, `.gitignore`,
