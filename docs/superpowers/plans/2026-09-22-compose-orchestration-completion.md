@@ -4949,13 +4949,25 @@ Value edits made while stopped *do* persist -- verified with `disconnectMessage`
 restart, alongside a brand-new `zz-admin-probe.toml`, which also survived.
 
 The proof that the mod, and not `cp -a`, is the writer is a line-ending conversion no
-copy can perform. Re-measured on the running stack on 2026-09-24, and identical on all
-five Fabric servers:
+copy can perform. Re-measured on the running stack on 2026-09-24, on all five Fabric
+servers:
 
 | File | In the image | Live in the volume |
 | --- | --- | --- |
 | `config/FabricProxy-Lite.toml` | 172 bytes, 4 CR | **169 bytes, 0 CR** |
-| `config/luckperms/luckperms.conf` | 33894 bytes, 684 CR | 33894 bytes, 684 CR |
+| `config/luckperms/luckperms.conf` | 33891-33896 bytes, 684 CR | identical to the image, byte for byte |
+
+Be careful with the second row. The `FabricProxy-Lite.toml` numbers really are the same
+on all five servers -- that file carries no per-server value. `luckperms.conf` does: its
+only per-server line is `server = "<name>"`, so its length tracks the name and the five
+servers measure 33891 (lobby), 33894 (survival), 33895 (project-0 and project-1), and
+33896 (onboarding). An earlier draft of this step measured `survival` alone and wrote
+`33894` under a sentence claiming all five, which is exactly the overstatement this
+document set is supposed to stop shipping.
+
+What is identical across all five, and is what the argument actually rests on, is the CR
+count (684) and the image-to-volume equality. State those; do not state a single byte
+count as if it were universal.
 
 So the rule is neither "config is durable" nor "config is volatile" -- it is a three-way
 split, and the split is mechanical enough to state as a test:
