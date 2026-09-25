@@ -4922,39 +4922,72 @@ git commit -m "test: add a runner for the full suite"
 **Files:**
 - Modify: `docs/api.md`
 - Modify: `README.md`
+- Modify: `AGENTS.md` (Step 3e moves one finding into the verified-behaviors list)
+- Modify: `CLAUDE.md` (its numbered list mirrors AGENTS.md's and must stay in sync)
+- Modify: `src/luckperms-init/permissions.yml` (Step 3e leaves a pointer behind)
+
+All five files are LF-only. Confirm with `tr -cd '\r' < <file> | wc -c` after editing;
+every one must still report `0`. `compose.yml` is CRLF and is **not** touched here.
 
 - [ ] **Step 0: Document that mod-owned configs discard WebDAV edits**
 
 Found during Task 8. The durability table in `docs/api.md` treats everything under
-`/data/config` as admin-editable and durable, but that is only true of files no running
-mod owns.
+`<server>/config/**` as admin-editable and durable -- "Seeded only if absent" -- but that
+is only true of files no running mod owns.
 
-`FabricProxy-Lite` parses its TOML through night-config and **writes the file back** —
+`FabricProxy-Lite` parses its TOML through night-config and **writes the file back** --
 on load, and again at JVM shutdown. Two consequences a remote administration service
 must handle:
 
 - **Comments do not survive.** An appended `# comment` is gone within about ten seconds
-  of boot. Verified: the image's rendered copy is CRLF with no trailing newline (172
-  bytes); the live file after the mod loads is LF-only with one (169 bytes) — a
-  conversion `cp -a` cannot perform, so the mod is provably the writer.
+  of boot.
 - **Edits made while the server is running are silently discarded at shutdown**, because
   the mod serializes its in-memory state over whatever is on disk. Only edits made while
   the server is stopped, or applied through the game, are safe.
 
-Value edits made while stopped *do* persist — verified with `disconnectMessage` across a
+Value edits made while stopped *do* persist -- verified with `disconnectMessage` across a
 restart, alongside a brand-new `zz-admin-probe.toml`, which also survived.
 
-Add a row or note to the durability table in `docs/api.md` distinguishing
-**mod-owned configs** (`config/FabricProxy-Lite.toml`, and any other file a loaded mod
-rewrites) from **inert configs** the server only reads. Recommend that the administration
-service stop the target server before editing a mod-owned file, and never rely on
-comments as a carrier for anything.
+The proof that the mod, and not `cp -a`, is the writer is a line-ending conversion no
+copy can perform. Re-measured on the running stack on 2026-09-24, and identical on all
+five Fabric servers:
+
+| File | In the image | Live in the volume |
+| --- | --- | --- |
+| `config/FabricProxy-Lite.toml` | 172 bytes, 4 CR | **169 bytes, 0 CR** |
+| `config/luckperms/luckperms.conf` | 33894 bytes, 684 CR | 33894 bytes, 684 CR |
+
+So the rule is neither "config is durable" nor "config is volatile" -- it is a three-way
+split, and the split is mechanical enough to state as a test:
+
+1. **Inert, durable.** Shipped in the image and byte-identical after boot. Today that is
+   `config/luckperms/luckperms.conf`, which LuckPerms reads and does not rewrite.
+2. **Mod-owned, shipped.** Shipped in the image and rewritten by a loaded mod. Today that
+   is `config/FabricProxy-Lite.toml` alone.
+3. **Mod-owned, generated.** Not in the image at all; a mod created it on first boot.
+   Today: `config/ferritecore.mixin.properties`, `config/lithium.properties`,
+   `config/spark/config.json`. These were **not** individually tested for
+   rewrite-on-shutdown. Treat them as category 2 because their writer is a running mod,
+   and say so in the doc rather than implying each one was measured.
+
+Add a note under the durability table distinguishing these. Recommend that the
+administration service stop the target server before editing anything in category 2 or 3,
+and never rely on comments as a carrier for anything.
+
+Do not present the category-3 list as exhaustive -- it is whatever mods happen to be
+loaded, so it changes with a mod bump. Give the reader the test rather than only today's
+answer: anything in `/data/config` with no counterpart in `/usr/src/init_data/config` was
+created by a mod, and is therefore owned by one.
 
 - [ ] **Step 1: Resolve the unverified context note**
 
-In `docs/api.md`, find the blockquote beginning `> **Unverified:** the OpenAPI schema declares context keys and values as`.
+**The probe passed.** `tests/test-seeder.sh` pins it with three assertions -- the write
+returns 200, the hyphenated context persists to storage intact, and it reads back through
+the API -- and the suite is green. `src/luckperms-init/permissions.yml` relies on this.
+There is no branch to take here.
 
-If the Task 13 probe **passed**, replace the whole blockquote with:
+In `docs/api.md`, replace the whole blockquote beginning
+`> **Unverified:** the OpenAPI schema declares context keys and values as` with:
 
 ```markdown
 > **Verified:** hyphenated context values such as `project-0` are accepted, even
@@ -4963,14 +4996,9 @@ If the Task 13 probe **passed**, replace the whole blockquote with:
 > of `{key, value}` pairs.
 ```
 
-If the probe **failed**, replace it with:
-
-```markdown
-> **Verified:** the API rejects context values containing hyphens, so `project-0`
-> and `project-1` cannot be used as `server` context values. Scope permissions for
-> those servers with global-context permission keys instead. `context` is sent as
-> an array of `{key, value}` pairs.
-```
+The replacement has to settle **both** questions the old blockquote raised: the hyphen,
+and the schema's inconsistency about whether `context` is an array or an object. The last
+sentence is what settles the second one -- do not drop it as redundant.
 
 - [ ] **Step 2: Remove the status caveat**
 
@@ -4990,14 +5018,25 @@ with:
 > is covered by `tests/`.
 ```
 
+The second sentence is load-bearing and accurate: `cloudflared` is deliberately never
+started locally, because `.env` carries a placeholder token and the container would
+restart-loop. Do not soften it into "fully verified".
+
 - [ ] **Step 3: Document the test suite in the README**
 
-In `README.md`, insert this section immediately before the `## Documentation` heading:
+In `README.md`, insert this section immediately before the `## Documentation` heading.
 
-```markdown
+Two things to get right. First, the table below is written against what the suites
+**actually** assert as of Task 17 -- `test-compose-config.sh` has grown well past the
+three checks an earlier draft of this plan credited it with. Second, do **not** repeat the
+`JAVA_OPTS` advice: `README.md` already carries it under `### Resource note`, which sits
+directly above the insertion point, and the two numbers would not even agree.
+
+````markdown
 ## Tests
 
-The suites under `tests/` exercise a running stack. Bring it up first, then:
+The suites under `tests/` exercise a running stack, so bring it up first -- see the
+resource note above. Then:
 
 ```bash
 bash tests/run-all.sh
@@ -5005,14 +5044,14 @@ bash tests/run-all.sh
 
 | Suite | Covers |
 | --- | --- |
-| `test-compose-config.sh` | Static validation: one published port, optional backup config, consistent credential defaults |
-| `test-webdav.sh` | WebDAV through Caddy: prefix handling, `Destination` rewriting, writes into server-created directories |
+| `test-compose-config.sh` | Static validation of the rendered config: one published port, shared-volume ownership, the WebDAV and cloudflared service shapes, the LuckPerms healthcheck needle, consistent credential defaults |
+| `test-webdav.sh` | WebDAV through Caddy: prefix handling, `Destination` rewriting, writes into server-created directories, and that neither route's prefix leaks onto a longer path |
 | `test-luckperms.sh` | Shared MariaDB storage on every server, no H2 fallback, cross-server messaging |
-| `test-seeder.sh` | The permission model applies correctly and re-running is a no-op |
+| `test-seeder.sh` | That hyphenated permission contexts are accepted, and that the permission model applies correctly and re-running it changes nothing |
 
-On a host with less than about 20 GB of RAM, lower `JAVA_OPTS` in `.env` before
-running the full stack.
-```
+`run-all.sh` fails the run if any suite fails **or** exits 0 without reaching its summary
+line -- a suite that died early would otherwise pass silently.
+````
 
 - [ ] **Step 3b: Document where the submodule pointers actually point**
 
@@ -5045,37 +5084,87 @@ recorded SHAs are not on `main`, so `git submodule update --remote` would roll a
 pointers backwards onto the pre-fix entrypoints, reinstating the `sed`-based secret
 injection, and would present as a working checkout rather than an error.
 
-- [ ] **Step 3c: Reconcile two claims the Task 15 review surfaced**
+- [ ] **Step 3c: Carry the ad-hoc-group weight caveat into `docs/api.md`**
 
-Both came out of measuring the live API while reviewing the permission model,
-and both are documentation work rather than model work, which is why they were
-left for this task.
+From the Task 15 review, measured against the live API.
 
-First, `docs/api.md` says groups not named in `permissions.yml` are "never
-touched and are safe for runtime management". True as far as the seeder goes,
-but incomplete as advice: a user's parent groups resolve highest-weight-first
-and the first value found wins, so an ad-hoc group weighted below a managed
-group that denies the same key loses, silently and with no error anywhere.
-Measured: against `onboarder`'s deny at weight 10, an ad-hoc grant resolves
-false at weight 0 and true at weight 11. `permissions.yml` carries this
-caveat; `docs/api.md` is the file a remote admin service is written against
-and does not. Add it there.
+`docs/api.md` says groups not named in `permissions.yml` are "never touched and are safe
+for runtime management". True as far as the seeder goes, but incomplete as advice: a
+user's parent groups resolve highest-weight-first and the first value found wins, so an
+ad-hoc group weighted below a managed group that **denies** the same key loses, silently
+and with no error anywhere. Measured against `onboarder`'s deny at weight 10, an ad-hoc
+grant of `irc.server.survival` resolves false at weight 0 and true at weight 11.
 
-Second, consider moving one measurement out of `permissions.yml` and into
-`AGENTS.md`'s "Verified behaviors" list, which is where this repository keeps
-findings whose job is to stop someone re-litigating them. The finding: a player
-whose only membership is the auto-assigned `default` group has a row in
-`luckperms_players` and none in `luckperms_user_permissions`, so MCHPRS sees
-them in no group -- while `GET /user/{id}` reports `group.default` for that same
-player, so the API view is not evidence the node is stored. The row appears once
-the player has any other stored node and disappears when it goes. It reads as an
-obvious bug in constraint 3 and is not one. If you move it, leave a one-line
-pointer behind rather than deleting it outright.
+`src/luckperms-init/permissions.yml` already carries this caveat in its header comment.
+`docs/api.md` is the file a remote admin service is written against and does not. Add it
+to the "Some groups are managed in code" section, keeping the measured weights -- they
+are what make it actionable rather than a vague warning.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3d: Fix the same claim where it appears a second time**
+
+`README.md` carries the identical unqualified claim -- "Groups absent from the file are
+never touched, so ad-hoc groups remain available as an escape hatch" -- under
+`### Permissions are defined in code`. Fixing `docs/api.md` alone would leave the same
+commit shipping a warning in one file and the bare escape-hatch framing in another.
+
+This does not need the full measurement twice. One clause is enough: the escape hatch
+works **provided the ad-hoc group outweighs any managed group that denies the same key**,
+pointing at `docs/api.md` for the detail.
+
+- [ ] **Step 3e: Move the `default`-group finding into the verified-behaviors list**
+
+The finding, currently in the `permissions.yml` header under MCHPRS constraint 3: a
+player whose only membership is the auto-assigned `default` group has a row in
+`luckperms_players` and none in `luckperms_user_permissions`, so MCHPRS sees them in no
+group -- while `GET /user/{id}` reports `group.default` for that same player, so the API
+view is not evidence the node is stored. The row appears once the player has any other
+stored node and disappears when it goes.
+
+It reads as an obvious bug in constraint 3 and is not one, which is exactly the shape of
+finding `AGENTS.md`'s "Verified behaviors -- do NOT 'fix' these" list exists to hold. Move
+it there as **item 7**, and:
+
+- Leave a one-line pointer in `permissions.yml` where the measurement was, rather than
+  deleting it outright. The surrounding constraint-3 text stays; only the measurement
+  moves.
+- `AGENTS.md` already states constraint 3 in short form under "MCHPRS permission
+  constraints". Cross-reference it rather than restating it a third time in the same
+  file.
+- **`CLAUDE.md` mirrors this list and must be updated in the same commit.** Its heading
+  currently reads `## Stop -- six things that look broken and are not` (with an em dash)
+  and its numbered list has six entries; both become seven. This is not optional
+  bookkeeping -- the two files disagreeing is what makes the list stop being trusted.
+
+Verify the counts after editing:
 
 ```bash
-git add docs/api.md README.md AGENTS.md src/luckperms-init/permissions.yml
+grep -c '^### [0-9]' AGENTS.md          # expect 7
+grep -c '^[0-9]\. \*\*' CLAUDE.md       # expect 7
+grep -c 'seven things' CLAUDE.md        # expect 1
+```
+
+- [ ] **Step 4: Verify and commit**
+
+Line endings first. All five files are LF-only and must stay that way:
+
+```bash
+for f in docs/api.md README.md AGENTS.md CLAUDE.md src/luckperms-init/permissions.yml; do
+  printf '%-40s cr=%s\n' "$f" "$(tr -cd '\r' < "$f" | wc -c)"
+done
+```
+
+Expected: `cr=0` on every line.
+
+Then confirm the claims these edits now make are the ones the suites actually hold:
+
+```bash
+bash tests/run-all.sh
+```
+
+Expected: `ALL 4 SUITES PASSED`.
+
+```bash
+git add docs/api.md README.md AGENTS.md CLAUDE.md src/luckperms-init/permissions.yml
 git commit -m "docs: reconcile documentation with the verified implementation"
 ```
 
