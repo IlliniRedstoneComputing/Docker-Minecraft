@@ -234,9 +234,11 @@ So:
   `velocity.toml`, `forwarding.secret`, and mchprs `Config.toml`.
 - **`25565` is the only published port.** Everything else reaches the outside world
   through Caddy and the Cloudflare tunnel.
-- **Submodules must be initialized**: `git submodule update --init --recursive`. Four
-  server definitions (`lobby`, `onboarding`, `project-0`, `project-1`) live in separate
-  repositories under the IlliniRedstoneComputing organization.
+- **The four server definitions are in-tree, not submodules.** `src/lobby`,
+  `src/onboarding`, `src/project-0` and `src/project-1` were git submodules pointing at
+  repositories under the IlliniRedstoneComputing organization, and were flattened into
+  this repository. There is nothing to initialize and no gitlink to bump. Those remotes
+  still hold the pre-flattening history; do not re-add them as submodules.
 
 ## MCHPRS permission constraints
 

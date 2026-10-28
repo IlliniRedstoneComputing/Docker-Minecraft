@@ -56,7 +56,7 @@
 | `src/luckperms-standalone/Initialization-1.0-SNAPSHOT.jar` | Unsourced binary, replaced by the seeder |
 | `wg0.conf.example` | Dead — no WireGuard service exists |
 
-**Submodule note:** `src/lobby`, `src/onboarding`, `src/project-0`, and `src/project-1` are separate repositories. Changes there are committed and pushed on a branch in each repository, then the parent repository's submodule pointers are bumped in Task 11.
+**Submodule note (historical):** `src/lobby`, `src/onboarding`, `src/project-0`, and `src/project-1` were separate repositories while Tasks 1-18 ran. Changes there were committed and pushed on a branch in each repository, and the parent's submodule pointers were bumped in Task 11. They were flattened into this repository after Task 18, so from Task 19 onward they are ordinary directories and there is no pointer to bump.
 
 ---
 
@@ -5357,61 +5357,34 @@ decision here rather than letting it lapse — every one of these was already de
 once, and an item that is silently dropped twice looks settled without anyone having
 settled it.
 
-- [ ] **Step 3: Confirm the working tree and submodules are clean**
+- [ ] **Step 3: Confirm the working tree is clean**
 
 ```bash
 git status --short
-git submodule status
 ```
 
-Expected: no output from the first; no `+` prefixes from the second.
+Expected: no output. The `git submodule status` half of this check was retired when the
+four server submodules were flattened into this repository -- see Step 3b.
 
-- [ ] **Step 3b: Confirm every gitlink is still reachable on its remote**
+- [ ] **Step 3b: RETIRED -- gitlink reachability no longer applies**
 
-`git submodule status` above is **not** sufficient and must not be treated as if it
-were. It reads local objects, so it prints four clean lines whether or not those commits
-still exist on origin -- it would pass unchanged the day after all four branches were
-squash-merged and their heads deleted, which is exactly the failure that breaks a fresh
-clone. Check the remote instead:
+This step existed to prove that each of the four submodule gitlinks pointed at a commit
+still reachable from some ref on its remote, because a gitlink records a bare SHA and a
+fresh clone cannot fetch one that no ref reaches.
 
-```bash
-git submodule foreach --quiet '
-  git fetch --quiet --prune origin 2>/dev/null
-  sha=$(git rev-parse HEAD)
-  refs=$(git branch -r --contains "$sha" 2>/dev/null | tr -d " " | tr "\n" "," | sed "s/,$//")
-  if [ -n "$refs" ]; then
-    echo "$name: $sha REACHABLE from $refs"
-  else
-    echo "$name: $sha NOT REACHABLE FROM ANY REMOTE REF -- clones will fail"
-  fi
-'
-```
+`src/lobby`, `src/onboarding`, `src/project-0` and `src/project-1` are no longer
+submodules -- they were flattened into this repository -- so there is no gitlink left to
+check and no `.gitmodules` to read. The concern was **discharged rather than dropped**:
+at the moment of flattening all four HEADs (`cc75b92`, `a60b69e`, `70c2211`, `614ff7b`)
+were reachable from `origin/claude/luckperms-seeding-fixes`, so no history was stranded,
+and those remotes still hold it.
 
-Expected: four `REACHABLE from ...` lines. Any `NOT REACHABLE` means the parent pointer
-references a commit a fresh clone cannot obtain; `git submodule update` fails there with
-no way to recover the tree. Fix it before merging by pushing a ref that reaches the
-commit, or by re-bumping the pointer to one that is reachable.
-
-Use `--contains` and not `ls-remote | grep "^$sha"`. The grep form only matches a SHA that
-is itself a **ref tip**, so the moment these branches merge with a merge commit the pinned
-SHA becomes an ordinary ancestor of `main` and the grep form reports it missing although it
-is perfectly fetchable. That false alarm would land precisely in the post-merge situation
-this step exists to check. Verified both ways: `--contains` finds an ancestor commit (it
-reports `origin/main` for one) and still rejects a fabricated SHA. The `git fetch` on the
-first line is load-bearing — `branch -r` reads remote-tracking refs, which are stale
-otherwise, and a deleted upstream branch only disappears from them after `--prune`.
-
-Note what this checks and what it does not: it proves some ref on origin reaches that SHA,
-using these credentials. It cannot prove the commit will still be reachable after the four
-branches merge. Carry that forward as a merge-order requirement rather than a test:
-
-> Merge the four submodule branches with a real merge commit or a fast-forward, **or**
-> re-bump the four gitlinks to the post-merge `main` SHAs in the same change that merges
-> them. A squash or rebase merge plus GitHub's "automatically delete head branches" leaves
-> the recorded SHA unreferenced.
-
-Merging those four repositories is a maintainer decision and is deliberately **not** a
-step in this plan. Surface the requirement at handoff; do not merge them unprompted.
+The merge-order requirement this step carried is retired with it. It warned that a squash
+or rebase merge, plus GitHub's "automatically delete head branches", would leave the
+recorded SHA unreferenced and break fresh clones. Nothing in this repository records
+those SHAs any more, so merging or deleting the four upstream branches can no longer
+break a checkout here. Those four repositories are now historical; what happens to them
+is a maintainer decision with no consequence for this tree.
 
 - [ ] **Step 4: Review the full diff**
 

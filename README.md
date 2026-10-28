@@ -50,40 +50,24 @@ so it is reached directly via a plain DNS record.
 
 ## Setup
 
-1. **Clone with submodules.** Four server definitions live in separate repositories:
-
-   ```bash
-   git submodule update --init --recursive
-   ```
-
-   The four server submodules are pinned to commits on the
-   `claude/luckperms-seeding-fixes` branch of their repositories, not to `main`. Until
-   those branches are merged, do not delete or force-push them — a gitlink records a
-   bare SHA, and if no ref on the remote still reaches it, `git submodule update` fails
-   and the checkout cannot be completed.
-
-   Merging them needs care: a squash or rebase merge writes a new commit, so the pinned
-   SHA survives only on the branch, and "automatically delete head branches" then removes
-   the last ref holding it. Either merge with a real merge commit or fast-forward, or
-   re-bump the four pointers to the post-merge `main` SHAs in the same change.
-
-   Do not pin them with a `branch =` key in `.gitmodules` instead: the recorded SHAs are
-   not on `main`, so `git submodule update --remote` would roll all four pointers back
-   onto the pre-fix entrypoints and present as a healthy checkout rather than an error.
-
-   This note has an expiry test: when `git submodule status` reports `heads/main` for all
-   four, the branches have merged, the hazard is gone, and the note should be deleted.
-
-2. **Create `.env`** from the template and fill in real secrets:
+1. **Create `.env`** from the template and fill in real secrets:
 
    ```bash
    cp .env.example .env
    ```
 
-3. **Optionally create `backup.config`** from `backup.config.example`. The stack runs
+   Set the LuckPerms database credentials *before* the first `docker compose up`.
+   MariaDB honours `MARIADB_USER` and `MARIADB_PASSWORD` only while it initializes an
+   empty data directory. Once the `luckperms-db-data` volume exists, editing them in
+   `.env` changes nothing on the server and every client is denied access instead --
+   including `root`, so it does not present as one service being misconfigured.
+   Recovering means dropping that volume, which re-runs initialization against the
+   current `.env`.
+
+2. **Optionally create `backup.config`** from `backup.config.example`. The stack runs
    without it; the backup service is simply inert.
 
-4. **Set up the Cloudflare tunnel** (one time, in the Zero Trust dashboard):
+3. **Set up the Cloudflare tunnel** (one time, in the Zero Trust dashboard):
    - Create a tunnel and copy its token into `CLOUDFLARE_TUNNEL_TOKEN` in `.env`.
    - Add one public hostname: `mc-admin.illiniredstone.org` → `http://caddy:80`.
    - Add an `A` record for `mc.illiniredstone.org` pointing at the host, for port 25565.
@@ -92,7 +76,7 @@ so it is reached directly via a plain DNS record.
    `config.yml` with ingress rules would be silently ignored. That is fine here, because
    Caddy handles all routing, so the dashboard needs only the single hostname above.
 
-5. **Start it:**
+4. **Start it:**
 
    ```bash
    docker compose up -d

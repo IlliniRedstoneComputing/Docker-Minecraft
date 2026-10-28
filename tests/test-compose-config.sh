@@ -112,9 +112,38 @@ assert_contains "$VELOCITY" "LUCKPERMS_MESSAGING_SERVICE: sql" "velocity uses sq
 # same silent divergence, just one layer down. `every LUCKPERMS_DB default
 # agrees` does not backstop this: it is self-relative, so deleting a consumer
 # lowers both counts equally and stays green.
-assert_contains "$VELOCITY" "LUCKPERMS_DATA_DATABASE: luckperms" "velocity uses the shared database name"
-assert_contains "$VELOCITY" "LUCKPERMS_DATA_USERNAME: luckperms_user" "velocity uses the shared database user"
-assert_contains "$VELOCITY" "LUCKPERMS_DATA_PASSWORD: luckperms_password" "velocity uses the shared database password"
+# Anchor these to luckperms-db's OWN settings rather than to compose.yml's
+# ${...:-default} literals. A literal only renders when .env leaves the variable
+# unset, so asserting them had this backwards: the suite passed on a stack with
+# no real credentials and failed on every stack that had them. Anchoring on the
+# database service keeps the cross-service intent, and is still not
+# self-relative among the consumers, which is what the note above warns about.
+LPDB=$(service_block luckperms-db "$CONFIG")
+[ -n "$LPDB" ] || bail "could not extract the luckperms-db service block"
+
+# svc_env <service-block> <VAR> -- the rendered value of VAR, or empty.
+svc_env() { printf '%s
+' "$1" | sed -n "s/^[[:space:]]*$2:[[:space:]]*//p" | head -1; }
+
+DB_NAME=$(svc_env "$LPDB" MARIADB_DATABASE)
+DB_USER=$(svc_env "$LPDB" MARIADB_USER)
+DB_PASS=$(svc_env "$LPDB" MARIADB_PASSWORD)
+# A blank value would make the assertions below vacuously true, which is worse
+# than a failure because it reports green.
+[ -n "$DB_NAME" ] && [ -n "$DB_USER" ] && [ -n "$DB_PASS" ]   || bail "could not read MARIADB_DATABASE/USER/PASSWORD from the luckperms-db block"
+
+assert_eq "$(svc_env "$VELOCITY" LUCKPERMS_DATA_DATABASE)" "$DB_NAME" "velocity uses the shared database name"
+assert_eq "$(svc_env "$VELOCITY" LUCKPERMS_DATA_USERNAME)" "$DB_USER" "velocity uses the shared database user"
+
+# Compared by hand rather than with assert_eq or assert_contains: both echo the
+# expected value on failure, which would print the database password into the
+# test output. Report the lengths instead.
+VEL_PASS=$(svc_env "$VELOCITY" LUCKPERMS_DATA_PASSWORD)
+if [ -n "$VEL_PASS" ] && [ "$VEL_PASS" = "$DB_PASS" ]; then
+  pass "velocity uses the shared database password"
+else
+  fail "velocity uses the shared database password"     "velocity's LUCKPERMS_DATA_PASSWORD does not match luckperms-db's MARIADB_PASSWORD (values withheld; lengths ${#VEL_PASS} and ${#DB_PASS})"
+fi
 
 # The healthcheck override must be PRESENT and must match the real response
 # schema. The base image's inherited check greps '"up":true' while the endpoint
