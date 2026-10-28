@@ -243,7 +243,7 @@ services:
   # hostname: mc-admin.illiniredstone.org -> http://caddy:80
   cloudflared:
     # Pinned like caddy and webdav: this terminates the public entrypoint.
-    image: cloudflare/cloudflared:2026.9.1
+    image: cloudflare/cloudflared:2026.10.5
     container_name: cloudflared
     restart: unless-stopped
     command: tunnel --no-autoupdate run
