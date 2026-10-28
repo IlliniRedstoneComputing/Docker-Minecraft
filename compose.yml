@@ -142,7 +142,7 @@ services:
       # configure the REST API
       - LUCKPERMS_REST_HTTP_PORT=8080
       - LUCKPERMS_REST_AUTH=true
-      - LUCKPERMS_REST_AUTH_KEYS=${LUCKPERMS_SECRET:-luckpermssecret}
+      - LUCKPERMS_REST_AUTH_KEYS=${LUCKPERMS_SECRET:?LUCKPERMS_SECRET must be set in .env}
     networks:
       - minecraft-network
       - frontend-network
@@ -165,7 +165,7 @@ services:
     restart: "no"
     environment:
       - LUCKPERMS_API_URL=http://luckperms-standalone:8080
-      - LUCKPERMS_SECRET=${LUCKPERMS_SECRET:-luckpermssecret}
+      - LUCKPERMS_SECRET=${LUCKPERMS_SECRET:?LUCKPERMS_SECRET must be set in .env}
       - PERMISSIONS_FILE=/permissions.yml
     volumes:
       - ./src/luckperms-init/permissions.yml:/permissions.yml:ro

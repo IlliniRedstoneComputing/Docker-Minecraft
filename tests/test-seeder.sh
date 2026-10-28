@@ -47,7 +47,7 @@ BASE="http://caddy:80"
 CURLRC=$(printf 'header = "Authorization: Bearer %s"\n' "$SECRET")
 api() {
   printf '%s' "$CURLRC" | docker run --rm -i --network irc-frontend-network \
-    curlimages/curl:latest -s -K - "$@"
+    curlimages/curl:8.22.0 -s -K - "$@"
 }
 
 # GROUP is named above the trap so the handler is never installed with nothing

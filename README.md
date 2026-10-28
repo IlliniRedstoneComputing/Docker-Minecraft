@@ -64,8 +64,22 @@ so it is reached directly via a plain DNS record.
    Recovering means dropping that volume, which re-runs initialization against the
    current `.env`.
 
-2. **Optionally create `backup.config`** from `backup.config.example`. The stack runs
-   without it; the backup service is simply inert.
+2. **Create `backup.config`** from `backup.config.example`, or stop the `backup`
+   service. The stack boots without the file, but the service is **not inert**. Measured:
+   with `backup.config` absent and no backend variables set, it logs `Successfully
+   scheduled backup from environment with expression @daily` -- `@daily` being
+   `offen/docker-volume-backup`'s own default when none is given.
+
+   That matters because `compose.yml` puts
+   `docker-volume-backup.stop-during-backup=true` on all seven game servers and on
+   `velocity`, so a run takes the network down, and with no storage backend configured
+   there is nowhere for the archive to go. Upstream does not document whether containers
+   are stopped before or after it discovers it has no destination, and confirming that
+   means triggering a run that stops the servers -- so treat the nightly outage as
+   *likely* rather than measured. What is measured: the job is scheduled, no backend is
+   configured, and the labels are present.
+
+   Until a backend is configured, `docker compose stop backup`.
 
 3. **Set up the Cloudflare tunnel** (one time, in the Zero Trust dashboard):
    - Create a tunnel and copy its token into `CLOUDFLARE_TUNNEL_TOKEN` in `.env`.
@@ -116,7 +130,7 @@ path is image-controlled or admin-controlled:
 | `mods/` (and velocity `plugins/`) | re-synced every start, so upgrades land |
 | `config/`, `server.properties` | seeded only if absent, so edits persist |
 | `velocity.toml` | seeded only if absent, so backend servers can be added |
-| `forwarding.secret` | always rewritten, so secret rotation propagates |
+| `forwarding.secret` | always rewritten, so rotation propagates **to the proxy only** -- every backend keeps its old copy until you delete it, see the rotation caveat in each `src/*/entrypoint.sh` |
 | `world/` — `lobby` | re-synced every start; the world is a code artifact |
 | `world/` — `onboarding` | re-synced every start **in policy only** — the image ships an empty world, so in practice nothing overwrites it and nothing backs it up |
 | `world/` — `survival`, `project-*`, `mchprs` | never touched; player-owned state |
@@ -193,7 +207,7 @@ bash tests/run-all.sh
 | --- | --- |
 | `test-compose-config.sh` | Static validation of the rendered config: one published port, shared-volume ownership, the WebDAV and cloudflared service shapes, the LuckPerms healthcheck needle, consistent credential defaults |
 | `test-webdav.sh` | WebDAV through Caddy: prefix handling, `Destination` rewriting, writes into a collection the client creates with `MKCOL`, and that neither route's prefix leaks onto a longer path |
-| `test-luckperms.sh` | Shared MariaDB storage on every server, no H2 fallback, cross-server messaging |
+| `test-luckperms.sh` | Shared MariaDB storage on every Fabric server and the proxy, no H2 fallback, cross-server messaging |
 | `test-seeder.sh` | That hyphenated permission contexts are accepted, and that the permission model applies correctly and re-running it changes nothing |
 
 `run-all.sh` fails the run if any suite fails **or** exits 0 without reaching its summary

@@ -26,7 +26,7 @@ CURLRC=$(printf 'user = "%s:%s"\n' "$USER_NAME" "$PASS")
 # dav <curl-args...> -- runs curl inside the frontend network against Caddy.
 dav() {
   printf '%s' "$CURLRC" | docker run --rm -i --network irc-frontend-network \
-    curlimages/curl:latest -s -K - "$@"
+    curlimages/curl:8.22.0 -s -K - "$@"
 }
 
 # The suite writes real files into the shared volume. Clear the known paths
@@ -56,7 +56,9 @@ dav_cleanup
 
 echo "webdav through caddy"
 
-# A request without the /files prefix must be refused by the WebDAV server.
+# The /files prefix reaches webdav and is served. This is the positive half; the
+# negative half -- that a prefix-less path falls through to Caddy's catch-all rather
+# than reaching webdav at all -- is the assertion directly below.
 CODE=$(dav -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$BASE/files/")
 assert_eq "$CODE" "207" "PROPFIND /files/ returns multi-status"
 
@@ -68,7 +70,7 @@ CODE=$(dav -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$BASE/survi
 assert_in "$CODE" "301 302 307 308" "an unrouted path hits the catch-all redirect"
 
 # Unauthenticated access must be rejected.
-CODE=$(docker run --rm --network irc-frontend-network curlimages/curl:latest \
+CODE=$(docker run --rm --network irc-frontend-network curlimages/curl:8.22.0 \
   -s -o /dev/null -w '%{http_code}' -X PROPFIND -H 'Depth: 0' "$BASE/files/")
 assert_eq "$CODE" "401" "unauthenticated PROPFIND is rejected"
 

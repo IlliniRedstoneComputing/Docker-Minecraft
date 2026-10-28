@@ -36,7 +36,7 @@ render_env_placeholders() {
   # byte restores it exactly.
   #
   # This is defensive here: the only file this script renders,
-  # FabricProxy-Lite.toml, ends WITHOUT a trailing newline (175 bytes, CR=4 LF=4
+  # FabricProxy-Lite.toml, ends WITHOUT a trailing newline (174 bytes, CR=4 LF=4
   # across five lines), so nothing is lost today. It is kept because that file
   # carries the forwarding secret, and a stray byte in a secret breaks auth
   # invisibly. velocity's copy of this function renders velocity.toml, which is

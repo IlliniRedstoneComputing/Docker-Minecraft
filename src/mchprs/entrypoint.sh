@@ -68,6 +68,21 @@ render_env_placeholders() {
 
 echo "Injecting secrets..."
 
+# ROTATION CAVEAT. The five Fabric entrypoints each carry one of these; mchprs is
+# also a backend holding the forwarding secret, and it needs the same warning for a
+# different reason. Those render the IMAGE's copy; this one renders the VOLUME's copy,
+# in place -- so the first boot substitutes the placeholders and destroys them, and
+# every later boot finds no ${...} token left to substitute. The render below is a
+# permanent no-op after the first start, and /data/mchprs/Config.toml keeps whatever
+# the environment held on that first boot. Every templated value is affected, not just
+# the secret: the Velocity forwarding secret AND the LuckPerms database credentials.
+#
+# To rotate: change the value, delete /data/mchprs/Config.toml, then RECREATE this
+# container. `docker compose restart` is NOT enough. Deleting
+# /data/config/FabricProxy-Lite.toml on the five Fabric backends -- which is what their
+# own caveats tell you to do -- does NOT cover this file, so following those
+# instructions alone leaves mchprs on the old secret, presenting as mchprs alone
+# refusing proxy connections.
 render_env_placeholders "$CONFIG_DIR/Config.toml"
 
 echo "Initialization complete. Starting server..."

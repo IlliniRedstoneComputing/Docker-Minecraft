@@ -38,7 +38,7 @@ CURLRC=$(printf 'header = "Authorization: Bearer %s"\n' "$SECRET")
 # api <curl-args...> -- curl inside the frontend network, against Caddy.
 api() {
   printf '%s' "$CURLRC" | docker run --rm -i --network irc-frontend-network \
-    curlimages/curl:latest -s -K - "$@"
+    curlimages/curl:8.22.0 -s -K - "$@"
 }
 
 # lp <path> -- GET the LuckPerms API through Caddy, exactly as an external

@@ -116,7 +116,7 @@ about that look removable and are not.
 **Do not drop `user: "1000:1000"` from the `mchprs` service.** Every other server image
 already runs as 1000 — the five Fabric servers and `velocity` via their itzg bases,
 `webdav` via its own `user:` key. `mchprs` does not: `src/mchprs/Dockerfile` is
-`FROM alpine:latest` and declares no `USER`, so without this key it writes `/data` as
+`FROM alpine:3.24` and declares no `USER`, so without this key it writes `/data` as
 root. (It is **not** inherited from `stackdoubleflow/mchprs` — that appears only as a
 `COPY --from=` source, and `COPY --from=` never contributes the source image's `USER`.
 Verified: `docker image inspect --format '{{.Config.User}}'` on the built image is

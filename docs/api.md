@@ -105,10 +105,29 @@ image re-seeds them. This is the single most important thing to get right.
 | `<server>/mods/**`, `velocity/plugins/**` | **No** | Re-synced from the image every start |
 | `lobby/world/**` | **No** | The world is a code artifact, re-synced from the image every start |
 | `onboarding/world/**` | **No, but not for the stated reason** | The image ships an empty world, so nothing re-syncs it — the volume copy is a disposable placeholder, see the caveat below |
+| `mchprs/Config.toml` | **Yes** | Seeded only if absent, then rendered **in place** -- so it is durable, it holds secrets, and a bad edit is never corrected by a restart. See the caveat below |
 | `velocity/forwarding.secret` | **No** | Always rewritten from the environment |
 
 A remote administration service should refuse — or at minimum loudly warn on — writes to
 the "No" rows, since they will appear to succeed and then vanish.
+
+**Caveat on `mchprs/Config.toml`.** `mchprs` is not a Fabric server: it has no `config/`
+directory, and its configuration is a single file at the server root, so none of the
+`<server>/config/**` rows above cover it. Its entrypoint copies the template in only when
+the file is absent and then renders the placeholders **in place**, which destroys them.
+After the first boot the live file holds literal values and no `${...}` tokens, so a
+later render substitutes nothing: the file is durable in the strongest sense, and an
+incorrect edit survives every restart. It also carries the Velocity forwarding secret and
+the LuckPerms database credentials in plaintext.
+
+**What the WebDAV credential actually reaches.** The single service account has full CRUD
+over the whole volume, which includes every secret rendered into it: the Velocity
+forwarding secret (`velocity/forwarding.secret`, `<server>/config/FabricProxy-Lite.toml`
+on all five Fabric servers, and `mchprs/Config.toml`) and the LuckPerms database
+username and password. Holding the WebDAV credential is therefore equivalent to holding
+those secrets, and that belongs in the threat model of whatever service holds it. This is
+a statement about the existing single-account design, not an argument against it — see
+the single-service-account note in [`AGENTS.md`](../AGENTS.md).
 
 **Caveat on `onboarding/world/**`.** The seeding policy treats it as a code artifact, the
 same as `lobby`'s, but `src/onboarding/server/world` currently holds only a `.gitkeep`.
@@ -138,11 +157,17 @@ Fabric servers:
 
 | File | In the image | Live in the volume |
 | --- | --- | --- |
-| `config/FabricProxy-Lite.toml` | 172 bytes, 4 CR | **169 bytes, 0 CR** |
+| `config/FabricProxy-Lite.toml` | *n* bytes, 4 CR | ***n* - 3 bytes, 0 CR** |
 | `config/luckperms/luckperms.conf` | 33891–33896 bytes, 684 CR | identical to the image, byte for byte |
 
-The `FabricProxy-Lite.toml` figures hold on **all five** servers unchanged — that file
-carries no per-server value. The `luckperms.conf` byte count does vary, with the length of
+The `FabricProxy-Lite.toml` **delta** holds on all five servers: 4 CR removed and one
+trailing LF added, a net -3 bytes. The absolute size is deliberately written as *n*
+because it tracks the length of `VELOCITY_SECRET`, which the entrypoint substitutes for
+the literal `${VELOCITY_SECRET}` token -- so no fixed pair of numbers is reproducible
+across deployments. Measured with a 25-character secret: 181 -> 178 on `survival`,
+`lobby` and `project-0`. Note also that the "in the image" column means the copy under
+`/usr/src/init_data/config`, which the entrypoint renders **in place** before copying it
+onward; the pristine file in git is 174 bytes and still holds the token. The `luckperms.conf` byte count does vary, with the length of
 its one per-server line, `server = "<name>"`, which is where the range comes from. What is
 identical across the five is the 684 CR and the image-to-volume equality, and that is what
 the argument rests on: the file LuckPerms only reads still has every CRLF it shipped with,
@@ -203,8 +228,19 @@ the edit, rather than looking for a restart call it will not find.
 ### Two required client behaviors
 
 **1. The `/files` prefix must be present on both the request path and the `Destination`
-header.** The server is configured with `prefix: /files` and strips it itself. A request
-missing the prefix is answered `400 Bad Request`.
+header.** The server is configured with `prefix: /files` and strips it itself. The two
+halves fail **differently**, and a client that expects one shape for both will mishandle
+the other:
+
+- Missing the prefix on the **`Destination` header** is answered `400 Bad Request` by the
+  WebDAV server. Measured.
+- Missing the prefix on the **request path** never reaches the WebDAV server at all.
+  `/files` and `/files/*` are its only routes, so the request falls through to Caddy's
+  catch-all and is answered **`302`** to `https://illiniredstone.org`. Measured:
+  `PROPFIND /survival/` returns 302. An HTTP client that follows redirects turns that
+  into a `200` with an HTML body, which is the worst shape for error handling -- a
+  success status carrying a web page. Disable redirect-following, or treat any `3xx` as
+  a routing error.
 
 **2. `Destination` must be path-only for `COPY` and `MOVE`.** Caddy rewrites
 `https://host/files/x` to `/files/x` on the way in, so a well-behaved client sending an
@@ -244,7 +280,8 @@ curl -u "$WEBDAV_USERNAME:$WEBDAV_PASSWORD" \
 | --- | --- |
 | `207` | Multi-status — normal `PROPFIND` response |
 | `201` / `204` | Created / overwritten |
-| `400` | Missing `/files` prefix on the path or `Destination` |
+| `302` | Missing `/files` prefix on the **path** -- Caddy's catch-all redirect, not a WebDAV response. See the note above |
+| `400` | Missing `/files` prefix on the `Destination` header |
 | `401` | Bad or missing Basic credentials |
 | `409` | Parent collection does not exist — `MKCOL` it first |
 | `423` | Locked |
