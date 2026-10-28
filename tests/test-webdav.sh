@@ -8,8 +8,14 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=lib.sh
 . tests/lib.sh
 
-USER_NAME=$(grep -E '^WEBDAV_USERNAME=' .env | cut -d= -f2-)
-PASS=$(grep -E '^WEBDAV_PASSWORD=' .env | cut -d= -f2-)
+# tr -d '\r' on both: .env is a CRLF file. This suite survived without the
+# guard only because Git Bash's grep opens in text mode and strips the CR by
+# accident -- see the Platform section of AGENTS.md. Under a Linux grep both
+# credentials carry a trailing CR and every request 401s, which presents as an
+# authentication failure rather than as a line-ending bug. tests/test-luckperms.sh
+# has carried the same guard since Task 12.
+USER_NAME=$(grep -E '^WEBDAV_USERNAME=' .env | cut -d= -f2- | tr -d '\r')
+PASS=$(grep -E '^WEBDAV_PASSWORD=' .env | cut -d= -f2- | tr -d '\r')
 BASE="http://caddy:80"
 
 # Keep the password off the docker run argv, where it would be visible in

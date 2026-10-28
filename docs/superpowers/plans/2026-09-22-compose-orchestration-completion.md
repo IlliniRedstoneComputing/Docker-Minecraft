@@ -5357,6 +5357,53 @@ decision here rather than letting it lapse — every one of these was already de
 once, and an item that is silently dropped twice looks settled without anyone having
 settled it.
 
+**Decisions -- Task 19 execution, 2026-10-28.**
+
+| Item | Decision | Basis |
+| --- | --- | --- |
+| 1. `CONFIG_DIR` used once, prefix hardcoded three more times | **Open -- held by the rebuild gate** | Fix is mechanical; the files are baked into images |
+| 2. Six of seven entrypoints lack a trailing newline | **Open -- with item 1** | The item itself ties it to item 1, same files |
+| 3. `set -euo pipefail` in four, `set -e` in three | **Cleared to close -- held by the rebuild gate** | The audit below found no residual risk |
+| 4. mchprs keeps the bare `content=$(cat "$file")` | **CLOSED -- kept deliberately** | Re-confirmed against the Task 8 decline note. The other six use `&& printf x`; mchprs must not be "harmonized" with a `;` variant |
+| 5. `test-webdav.sh` reads `.env` without `tr -d` | **CLOSED -- fixed** | Guard added to both extractions, matching `test-luckperms.sh`. Suite still 12/12 |
+| 6. `ghcr.io/luckperms/rest-api:latest` unpinned | **CLOSED -- pinned by digest** | Commit 0916eee. Upstream publishes only `:latest` and `:main`, so a digest is the only deterministic option |
+| 7. `velocity/forwarding.secret` returns to `0644` | **Open -- maintainer's call, and held by the rebuild gate** | Re-measured 2026-10-28: still `-rw-r--r--`, owner `1000:1000` |
+
+Item 3 asked for an audit before any harmonization. It was done, and it clears:
+
+- The only expansions in the three `set -e` files are `$1` inside functions that are
+  always called with an argument, `"$@"` on the final `exec`, and `${BASH_REMATCH[3]}`,
+  which this plan already verified is an empty string rather than unset.
+- `"$@"` under `set -u` is safe, and not merely by argument: all four strict entrypoints
+  already run the identical `exec /image/scripts/start "$@"` line under
+  `set -euo pipefail`. `survival` carries the comment saying so while running only
+  `set -e`.
+- `pipefail` changes nothing in any of the three. Counting pipes returns 0, 1 and 2, and
+  every hit is a `||` operator rather than a pipeline.
+
+**The rebuild gate.** Items 1, 2, 3 and 7 all edit files that are `COPY`'d into images, so
+a change to any of them is inert until `docker compose build` plus a restart. That build no
+longer resolves to the cached February `latest`: since commit 0916eee the Fabric servers
+pin `itzg/minecraft-server:java25`, whose current build is 2026-10-25. Closing these four
+therefore means pulling a newer base image and restarting every backend, which is a
+maintainer-timed operation rather than a side effect of a review task. None of the four is
+a bug on this host today except item 7, whose blast radius is confined to the uid-1000
+containers that mount the volume.
+
+Two of this step's sibling checks are miscalibrated, and were corrected while being run
+rather than reported as failures:
+
+- **Step 1's grep cannot return `CLEAN`.** It matches `src/mchprs/Config.toml`, which is
+  the template the entrypoint renders at runtime and is *supposed* to hold `${...}`
+  tokens, plus three explanatory comments inside `render_env_placeholders`. The invariant
+  it means to check is that no placeholder survives in a *rendered* file, which is a
+  runtime property: verified CLEAN across all seven containers.
+- **Step 2's `grep -c 'healthcheck'` expects 2 and returns 4.** Line 95 is mariadb's
+  `healthcheck.sh` command name and line 216 is prose. Counting declarations instead,
+  with an anchored `^\s*healthcheck:`, returns 2 -- on `luckperms-db` and
+  `luckperms-standalone`, exactly as retracted findings 1 and 2 require.
+
+
 - [ ] **Step 3: Confirm the working tree is clean**
 
 ```bash
