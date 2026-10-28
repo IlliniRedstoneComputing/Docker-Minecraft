@@ -1,4 +1,4 @@
-FROM itzg/minecraft-server:latest
+FROM itzg/minecraft-server:java25
 
 ENV TYPE=FABRIC
 ENV EULA=TRUE

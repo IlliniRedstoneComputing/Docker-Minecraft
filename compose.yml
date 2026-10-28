@@ -4,7 +4,7 @@ services:
   # ! Any service that depends on the "managed-files" volume should depend on this service to ensure the directory structure is created before they start
   volume_init:
     container_name: volume-init
-    image: alpine
+    image: alpine:3.24
     volumes:
       - managed-files:/mnt/data
     # Creates the per-server subdirectories, hands the whole tree to uid 1000,
@@ -60,7 +60,7 @@ services:
   # Daily backup service that creates compressed archives of all managed volumes and uploads them to S3-compatible storage
   backup:
     container_name: backup
-    image: offen/docker-volume-backup:latest
+    image: offen/docker-volume-backup:v2
     restart: unless-stopped
     env_file:
       - path: backup.config
@@ -120,7 +120,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -q -O - http://localhost:3001/health | grep -q '\"healthy\":true'",
+          'wget -q -O - http://localhost:3001/health | grep -q ''"healthy":true''',
         ]
       interval: 30s
       timeout: 10s
@@ -178,9 +178,6 @@ services:
   # WebDAV interface over the shared server-data volume.
   # Single service account by design -- see src/webdav/config.yml.
   webdav:
-    # Pinned, not :latest -- this is the one service reachable from the
-    # internet through the tunnel, so an unreviewed image must not land here
-    # on the next pull.
     image: ghcr.io/hacdias/webdav:v5.16.0
     container_name: webdav
     restart: unless-stopped
@@ -208,8 +205,6 @@ services:
 
   # Internal path router between the tunnel and the admin services.
   caddy:
-    # Pinned for the same reason webdav is: this sits directly in the
-    # request path from the internet.
     image: caddy:2.11.4-alpine
     container_name: caddy
     restart: unless-stopped
@@ -219,9 +214,7 @@ services:
       - frontend-network
     depends_on:
       # webdav has no healthcheck by design (FROM scratch: no shell, no HTTP
-      # client), so it can only be waited on for start. luckperms-standalone
-      # does have one, so gate on it -- consistent with how the rest of this
-      # file treats health-gated dependencies.
+      # client), so it can only be waited on for start.
       webdav:
         condition: service_started
       luckperms-standalone:

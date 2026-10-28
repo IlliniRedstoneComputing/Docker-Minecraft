@@ -2,7 +2,7 @@ ARG TYPE=FABRIC
 ARG EULA=TRUE
 ARG ONLINE_MODE=FALSE
 ARG VERSION=1.21.8
-FROM itzg/minecraft-server:latest
+FROM itzg/minecraft-server:java25
 
 ENV TYPE=FABRIC
 ENV EULA=TRUE

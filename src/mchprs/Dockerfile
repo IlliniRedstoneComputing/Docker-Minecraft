@@ -1,8 +1,10 @@
 # Stage 1: Use an image with bash and coreutils installed for the entrypoint script
-FROM alpine:latest
+FROM alpine:3.24
 RUN apk add --no-cache bash coreutils
 
-COPY --from=stackdoubleflow/mchprs /mchprs /mchprs
+# Pinned to the commit build byte-identical to the binary in use. Upstream's
+# 0.5 release line is an OLDER binary, so no release tag matches what runs.
+COPY --from=stackdoubleflow/mchprs:sha-d492e43 /mchprs /mchprs
 
 # Use entrypoint to inject secrets at runtime for "better" security
 COPY ./entrypoint.sh /entrypoint.sh
