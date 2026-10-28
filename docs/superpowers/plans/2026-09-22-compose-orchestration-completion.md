@@ -5361,13 +5361,13 @@ settled it.
 
 | Item | Decision | Basis |
 | --- | --- | --- |
-| 1. `CONFIG_DIR` used once, prefix hardcoded three more times | **Open -- held by the rebuild gate** | Fix is mechanical; the files are baked into images |
-| 2. Six of seven entrypoints lack a trailing newline | **Open -- with item 1** | The item itself ties it to item 1, same files |
-| 3. `set -euo pipefail` in four, `set -e` in three | **Cleared to close -- held by the rebuild gate** | The audit below found no residual risk |
+| 1. `CONFIG_DIR` used once, prefix hardcoded three more times | **CLOSED -- fixed** | `INIT_DIR` introduced in all five Fabric entrypoints; `CONFIG_DIR` derives from it and the 3-4 literals per file now expand it |
+| 2. Six of seven entrypoints lack a trailing newline | **CLOSED -- fixed** | All seven now end with a newline, verified by last-byte check |
+| 3. `set -euo pipefail` in four, `set -e` in three | **CLOSED -- harmonized** | All seven now `set -euo pipefail`. Audit below plus a live run: zero unbound-variable errors across velocity, mchprs, survival and lobby |
 | 4. mchprs keeps the bare `content=$(cat "$file")` | **CLOSED -- kept deliberately** | Re-confirmed against the Task 8 decline note. The other six use `&& printf x`; mchprs must not be "harmonized" with a `;` variant |
 | 5. `test-webdav.sh` reads `.env` without `tr -d` | **CLOSED -- fixed** | Guard added to both extractions, matching `test-luckperms.sh`. Suite still 12/12 |
 | 6. `ghcr.io/luckperms/rest-api:latest` unpinned | **CLOSED -- pinned by digest** | Commit 0916eee. Upstream publishes only `:latest` and `:main`, so a digest is the only deterministic option |
-| 7. `velocity/forwarding.secret` returns to `0644` | **Open -- maintainer's call, and held by the rebuild gate** | Re-measured 2026-10-28: still `-rw-r--r--`, owner `1000:1000` |
+| 7. `velocity/forwarding.secret` returns to `0644` | **CLOSED -- fixed** | `cp -a` replaced with `install -m 600`. Verified live after a velocity restart: `-rw------- 1000 1000`, which is this step's own expected output |
 
 Item 3 asked for an audit before any harmonization. It was done, and it clears:
 
@@ -5381,14 +5381,23 @@ Item 3 asked for an audit before any harmonization. It was done, and it clears:
 - `pipefail` changes nothing in any of the three. Counting pipes returns 0, 1 and 2, and
   every hit is a `||` operator rather than a pipeline.
 
-**The rebuild gate.** Items 1, 2, 3 and 7 all edit files that are `COPY`'d into images, so
-a change to any of them is inert until `docker compose build` plus a restart. That build no
-longer resolves to the cached February `latest`: since commit 0916eee the Fabric servers
-pin `itzg/minecraft-server:java25`, whose current build is 2026-10-25. Closing these four
-therefore means pulling a newer base image and restarting every backend, which is a
-maintainer-timed operation rather than a side effect of a review task. None of the four is
-a bug on this host today except item 7, whose blast radius is confined to the uid-1000
-containers that mount the volume.
+**The rebuild gate -- OPENED 2026-10-28 at the maintainer's direction.** Items 1, 2, 3 and
+7 all edit files that are `COPY`'d into images, so a change to any of them was inert until
+`docker compose build` plus a restart, and that build no longer resolves to the cached
+February `latest`: since commit 0916eee the Fabric servers pin
+`itzg/minecraft-server:java25`. The maintainer authorised the rebuild, so all four are now
+closed. What the rebuild actually did, measured rather than assumed:
+
+- The built server images derive from base revision `41970342`, **not** the cached
+  February `latest` (`8b2f2653`), confirming the pin pulled the 2026-10-25 `java25` build.
+  BuildKit caches base images outside the image store, so `docker image ls` does not list
+  the tag -- the base label is the reliable check.
+- Minecraft is still **1.21.8**, so the newer base did not drift the game version.
+  `VERSION=1.21.8` in all five Dockerfiles is what holds that.
+- All five Fabric servers plus `velocity` came back healthy, `luckperms-init` exited 0,
+  and the full suite is unchanged at 41/20/31/12.
+- `cloudflared` was deliberately excluded from the recreate so the tunnel was not
+  re-exposed; it is unrelated to all four items.
 
 Two of this step's sibling checks are miscalibrated, and were corrected while being run
 rather than reported as failures:

@@ -64,22 +64,21 @@ so it is reached directly via a plain DNS record.
    Recovering means dropping that volume, which re-runs initialization against the
    current `.env`.
 
-2. **Create `backup.config`** from `backup.config.example`, or stop the `backup`
-   service. The stack boots without the file, but the service is **not inert**. Measured:
-   with `backup.config` absent and no backend variables set, it logs `Successfully
-   scheduled backup from environment with expression @daily` -- `@daily` being
-   `offen/docker-volume-backup`'s own default when none is given.
+2. **Optionally set up backups.** The `backup` service is **opt-in**: it declares
+   `profiles: [backup]`, so the command in step 4 does not start it. Create
+   `backup.config` from `backup.config.example`, then:
 
-   That matters because `compose.yml` puts
-   `docker-volume-backup.stop-during-backup=true` on all seven game servers and on
-   `velocity`, so a run takes the network down, and with no storage backend configured
-   there is nowhere for the archive to go. Upstream does not document whether containers
-   are stopped before or after it discovers it has no destination, and confirming that
-   means triggering a run that stops the servers -- so treat the nightly outage as
-   *likely* rather than measured. What is measured: the job is scheduled, no backend is
-   configured, and the labels are present.
+   ```bash
+   docker compose --profile backup up -d
+   ```
 
-   Until a backend is configured, `docker compose stop backup`.
+   The profile exists because the service is not inert when unconfigured. Measured: with
+   `backup.config` absent and no backend variables set, it logs `Successfully scheduled
+   backup from environment with expression @daily` — `@daily` being
+   `offen/docker-volume-backup`'s own default. With no storage backend there is nowhere
+   for the archive to go, and the `docker-volume-backup.stop-during-backup=true` labels
+   on all seven game servers and `velocity` mean a run stops the network to produce
+   nothing. Do not enable the profile until a backend is configured.
 
 3. **Set up the Cloudflare tunnel** (one time, in the Zero Trust dashboard):
    - Create a tunnel and copy its token into `CLOUDFLARE_TUNNEL_TOKEN` in `.env`.
@@ -102,7 +101,8 @@ These exist to prevent well-intentioned changes that would break things.
 
 ### Which data is backed up, and why
 
-`backup` archives **only `survival`, `project-0`, and `project-1`**. This is deliberate.
+`backup` archives **`survival`, `project-0`, `project-1` and `mchprs`**, and is opt-in.
+This is deliberate.
 
 - **`lobby` and `onboarding` are excluded**, though for different reasons than one
   sentence can carry. `lobby`'s world is defined in code rather than accumulated through
@@ -114,8 +114,18 @@ These exist to prevent well-intentioned changes that would break things.
   world in that volume is a disposable placeholder, confirmed by the maintainer, so the
   exclusion stands — it is just true for a different reason. Item 5 of
   [`AGENTS.md`](AGENTS.md) records it.
-- **`velocity` and `mchprs` are excluded** because neither holds durable state worth
-  restoring.
+- **`velocity` is excluded** because it holds no durable state worth restoring: a jar,
+  config, logs and lang files, nothing that accrues.
+- **`mchprs` is included**, as of 2026-10-28. It was previously excluded on the same
+  "no durable state" grounds as `velocity`, which was false: `mchprs/world/plots.db`,
+  `world/plots`, `world/players` and `schems` are player-built redstone and saved
+  schematics, held only in the volume. Item 5 of [`AGENTS.md`](AGENTS.md) records the
+  correction.
+
+The service declares `profiles: [backup]`, so `docker compose up -d` does not start it.
+Unconfigured it would schedule a daily run with nowhere to write while holding the power
+to stop every server; start it with `docker compose --profile backup up -d` once a
+storage backend is set.
 
 The same reasoning drives the seeding policy below: backups and world-seeding follow the
 same line between "state that accrues" and "state defined in code."

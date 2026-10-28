@@ -1,7 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-CONFIG_DIR="/usr/src/init_data/config"
+# INIT_DIR is the single source of truth for the image's seed tree, and CONFIG_DIR
+# derives from it rather than repeating it. Before, CONFIG_DIR was spelled out
+# separately from the seeding paths below, so changing it rendered a template at the
+# new path while still seeding from the OLD one -- shipping an unrendered
+# ${VELOCITY_SECRET} into /data/config on a server running ONLINE_MODE=FALSE, which
+# surfaces only as backends refusing proxy connections. Closes deferral 1.
+INIT_DIR="/usr/src/init_data"
+CONFIG_DIR="$INIT_DIR/config"
 
 # ---------------------------------------------------------------------------
 # render_env_placeholders <file>
@@ -108,7 +115,7 @@ echo "Seeding /data..."
 # under /data/mods survives.
 mkdir -p /data/mods
 rm -f /data/mods/*.jar
-cp -a /usr/src/init_data/mods/. /data/mods/
+cp -a "$INIT_DIR/mods/." /data/mods/
 
 # Image-controlled BY DESIGN, per AGENTS.md item 4: this world is a code
 # artifact, republished by rebuilding the image rather than allowed to drift.
@@ -146,7 +153,7 @@ cp -a /usr/src/init_data/mods/. /data/mods/
 # $UID. On a fresh volume that chown still fires and masks the problem, which
 # is what would make it a nasty one to diagnose.
 mkdir -p /data/world
-cp -a /usr/src/init_data/world/. /data/world/
+cp -a "$INIT_DIR/world/." /data/world/
 
 # Admin-editable over WebDAV: seeded only when absent so edits survive restarts.
 #
@@ -161,8 +168,8 @@ cp -a /usr/src/init_data/world/. /data/world/
 # seed-if-absent only ever adds, so a config file the image stops shipping stays
 # in /data/config forever. Retiring one means deleting it on each volume.
 mkdir -p /data/config
-cp -a --update=none /usr/src/init_data/config/. /data/config/
-[ -f /data/server.properties ] || cp -a /usr/src/init_data/server.properties /data/server.properties
+cp -a --update=none "$INIT_DIR/config/." /data/config/
+[ -f /data/server.properties ] || cp -a "$INIT_DIR/server.properties" /data/server.properties
 
 echo "Initialization complete. Starting server..."
 

@@ -57,8 +57,17 @@ services:
          chown -R 1000:1000 /mnt/data &&
          chmod -R u=rwX,g=rwX,o= /mnt/data"
 
-  # Daily backup service that creates compressed archives of all managed volumes and uploads them to S3-compatible storage
+  # Backup service: compressed archives of the volumes that hold durable state,
+  # uploaded to S3-compatible storage.
+  #
+  # OPT-IN, and deliberately so. With no backup.config and no storage backend this
+  # service is NOT inert: offen/docker-volume-backup defaults to @daily and would
+  # schedule a run with nowhere to write, while the stop-during-backup labels below
+  # let it stop every server. `profiles` keeps it out of a bare `up -d` until a
+  # backend is actually configured. Start it with:
+  #   docker compose --profile backup up -d
   backup:
+    profiles: [backup]
     container_name: backup
     image: offen/docker-volume-backup:v2
     restart: unless-stopped
@@ -81,6 +90,14 @@ services:
         target: /backup/project-1
         volume:
           subpath: project-1
+      # mchprs holds player-built redstone: world/plots.db, world/plots,
+      # world/players and schems. That is durable state and exists only here --
+      # not in git and not in any image. See AGENTS.md item 5.
+      - type: volume
+        source: managed-files
+        target: /backup/mchprs
+        volume:
+          subpath: mchprs
       - /var/run/docker.sock:/var/run/docker.sock:ro # Docker socket needed to stop/start containers during backup
     networks:
       - minecraft-network

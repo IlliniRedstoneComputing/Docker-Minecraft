@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 CONFIG_DIR="/data"
 TEMPLATE_CONFIG="/etc/mchprs/Config.toml"

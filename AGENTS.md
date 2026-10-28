@@ -87,15 +87,34 @@ state:
   same case as `lobby`, including the part where the image starts overwriting whatever
   players changed.
 
-### 5. `backup` intentionally covers only `survival`, `project-0`, and `project-1`
+### 5. `backup` covers `survival`, `project-0`, `project-1` and `mchprs`, and is opt-in
 
-Those are the only volumes holding state that accrues over time.
+Those are the volumes holding state that accrues over time.
 
 - `lobby`'s world is restored from the image on every start, so backing it up would only
   duplicate what git already holds.
-- `velocity` and `mchprs` hold no durable state worth restoring.
+- `velocity` holds no durable state worth restoring — its volume is a jar, config, logs
+  and lang files, nothing that accrues.
 
-Do not extend backup coverage to the other services.
+Do not extend coverage beyond these four.
+
+**The service declares `profiles: [backup]`, so a bare `docker compose up -d` does not
+start it.** That is deliberate, and not a convenience. With no `backup.config` and no
+storage backend the service is **not inert**: `offen/docker-volume-backup` defaults to
+`@daily` and schedules a run with nowhere to write, while the
+`docker-volume-backup.stop-during-backup=true` labels on all seven game servers and
+`velocity` let that run stop the network. Start it with
+`docker compose --profile backup up -d`, once a backend is actually configured.
+
+**`mchprs` was added 2026-10-28, correcting this item.** It previously read "`velocity`
+and `mchprs` hold no durable state worth restoring" — false for mchprs, and in direct
+contradiction with item 4, which already lists mchprs among the worlds that are
+"player-owned and must never be overwritten". Measured: `mchprs/world/plots.db`,
+`mchprs/world/plots`, `mchprs/world/players` and `mchprs/schems` hold player-built
+redstone and saved schematics, and exist only in the `managed-files` volume — in neither
+git nor any image, and until now in no backup either. The incident recorded in
+`compose.yml`, where mchprs panicked its plot thread and silently lost every plot save,
+is not something that happens to a volume holding nothing worth restoring.
 
 **`onboarding` is excluded for a different reason, settled by the maintainer.** Its
 exclusion was originally recorded on the same grounds as `lobby`'s, but `onboarding`

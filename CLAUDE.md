@@ -30,11 +30,14 @@ Items 6 and 7 postdate that appendix; their measurements are in `AGENTS.md` only
    — it runs adventure mode with its world committed, while `onboarding` ships an empty
    world and runs survival. Read item 4 of [`AGENTS.md`](AGENTS.md) before committing a
    world into `src/onboarding`.
-5. **`backup` covers only `survival`, `project-0`, and `project-1` on purpose.** Nothing
-   else accrues durable state. `onboarding` is excluded for a slightly different reason
-   than the other two — its world is a disposable placeholder rather than an image-
-   restored artifact — settled by the maintainer and recorded in item 5 of
-   [`AGENTS.md`](AGENTS.md).
+5. **`backup` covers `survival`, `project-0`, `project-1` and `mchprs`, and is opt-in.**
+   `lobby` is restored from its image and `velocity` accrues nothing. The service
+   declares `profiles: [backup]`, so a bare `up -d` does not start it — unconfigured it
+   schedules a daily run with nowhere to write while holding the power to stop every
+   server. `onboarding` is excluded for a slightly different reason than `lobby` — its
+   world is a disposable placeholder rather than an image-restored artifact — settled by
+   the maintainer and recorded in item 5 of [`AGENTS.md`](AGENTS.md), which also records
+   why `mchprs` was added to the set.
 6. **The shared data volume is governed by ownership, not by world-writability, and
    `mchprs`'s `user: "1000:1000"` is load-bearing.** Everything that mounts
    `managed-files` runs as uid 1000; `mchprs` is the only image that does not do so on

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 CONFIG_DIR="/usr/src/init_data"
 
@@ -98,7 +98,12 @@ cp -a "$CONFIG_DIR/plugins/." /server/plugins/
 # Always rewritten so secret rotation propagates. This lands on container
 # recreate -- which a changed .env forces -- rather than on a bare
 # `docker restart`, where the rendered copy holds no token left to re-render.
-cp -a "$CONFIG_DIR/forwarding.secret" /server/forwarding.secret
+# install, not `cp -a`: cp -a restores the image's 0644, and volume_init's `o=`
+# cannot hold it -- that runs to completion before this service starts, so
+# whatever it set is overwritten by this copy. Only the writer of a file can
+# hold its mode. This is the proxy's forwarding secret, so it gets 0600.
+# Closes deferral 7.
+install -m 600 "$CONFIG_DIR/forwarding.secret" /server/forwarding.secret
 
 # Admin-editable over WebDAV: seeded only when absent, so operators can add
 # backend servers to velocity.toml without losing the change on restart.
