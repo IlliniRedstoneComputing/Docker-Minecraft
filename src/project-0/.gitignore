@@ -1,0 +1,30 @@
+# Environment files
+.env
+
+# Server runtime files
+server/world/*
+server/logs/*
+
+# But keep the directories
+!server/world/.gitkeep
+!server/logs/.gitkeep
+!server/config/.gitkeep
+
+# Server generated files
+server/*.jar
+server/*.json
+server/*.txt
+server/libraries/
+server/versions/
+server/crash-reports/
+server/banned-*.json
+server/ops.json
+server/usercache.json
+server/whitelist.json
+
+# Docker volumes
+volumes/
+
+# Backups
+*.tar.gz
+backup-*/
